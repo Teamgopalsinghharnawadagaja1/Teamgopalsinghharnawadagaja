@@ -3,7 +3,8 @@ name: Build Team GopalSingh APK
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -14,86 +15,193 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
+      # 1. Checkout repository
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2. Setup Java
       - name: Setup Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
+      # 3. Setup Node
       - name: Setup Node 20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
 
-      - name: Setup Android
+      # 4. Setup Android SDK
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      # 5. Extract Android project
       - name: Extract project
         shell: bash
         run: |
           set -e
 
-          unzip -q ./team-gopal-singh-merged-app-android.zip -d extracted
+          echo "Checking ZIP file..."
+          ls -lah
 
-          rm -rf android client
+          if [ ! -f "./team-gopal-singh-merged-app-android.zip" ]; then
+            echo "ERROR: ZIP file not found!"
+            exit 1
+          fi
+
+          rm -rf extracted android client
+
+          mkdir -p extracted
+
+          unzip -q \
+            "./team-gopal-singh-merged-app-android.zip" \
+            -d extracted
+
+          echo "Extracted files:"
+          find extracted -maxdepth 3 -type f | sort | head -300
+
+          if [ ! -d "extracted/android" ]; then
+            echo "ERROR: extracted/android folder not found!"
+            exit 1
+          fi
 
           cp -a extracted/android android
 
-          if [ -d extracted/client ]; then
+          if [ -d "extracted/client" ]; then
             cp -a extracted/client client
           fi
 
+          echo ""
           echo "Android project:"
-          find android -maxdepth 3 -type f | sort
+          find android -maxdepth 4 -type f | sort | head -300
 
-      - name: Install Gradle
-        shell: bash
-        run: |
-          set -e
-
-          curl -L --retry 3 \
-            https://services.gradle.org/distributions/gradle-9.3.1-bin.zip \
-            -o gradle.zip
-
-          unzip -q gradle.zip -d "$HOME"
-
-          echo "$HOME/gradle-9.3.1/bin" >> "$GITHUB_PATH"
-
-      - name: Create debug keystore
+      # 6. Verify Gradle wrapper
+      - name: Verify Gradle wrapper
         working-directory: android
         shell: bash
         run: |
           set -e
 
-          keytool -genkeypair \
-            -v \
-            -keystore debug.keystore \
-            -storepass android \
-            -keypass android \
-            -alias androiddebugkey \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
+          if [ ! -f "./gradlew" ]; then
+            echo "ERROR: gradlew not found!"
+            echo ""
+            echo "The Android project must contain:"
+            echo "android/gradlew"
+            echo "android/gradle/wrapper/gradle-wrapper.properties"
+            exit 1
+          fi
 
-      - name: Build APK
+          chmod +x ./gradlew
+
+          echo "Gradle wrapper found."
+          ./gradlew --version
+
+      # 7. Check Android SDK
+      - name: Check Android environment
+        shell: bash
+        run: |
+          set -e
+
+          echo "Java:"
+          java -version
+
+          echo ""
+          echo "Node:"
+          node --version
+
+          echo ""
+          echo "npm:"
+          npm --version
+
+          echo ""
+          echo "Android SDK:"
+          echo "$ANDROID_HOME"
+
+          echo ""
+          echo "Installed SDK packages:"
+          sdkmanager --list_installed || true
+
+      # 8. Install client dependencies if package.json exists
+      - name: Install client dependencies
+        shell: bash
+        run: |
+          set -e
+
+          if [ -d "client" ] && [ -f "client/package.json" ]; then
+            echo "Installing client dependencies..."
+
+            cd client
+
+            if [ -f "package-lock.json" ]; then
+              npm ci
+            else
+              npm install
+            fi
+          else
+            echo "No client/package.json found."
+            echo "Skipping npm install."
+          fi
+
+      # 9. Build Debug APK
+      - name: Build Debug APK
         working-directory: android
         shell: bash
         run: |
           set -e
 
-          gradle clean assembleDebug \
+          chmod +x ./gradlew
+
+          ./gradlew clean assembleDebug \
             --no-daemon \
-            --no-build-cache \
             --stacktrace \
             --console=plain
 
-      - name: Upload APK
+      # 10. Find generated APK
+      - name: Find APK
+        shell: bash
+        run: |
+          set -e
+
+          echo "Searching for APK..."
+
+          find android/app/build/outputs \
+            -type f \
+            -name "*.apk" \
+            -print
+
+          APK_COUNT=$(find android/app/build/outputs \
+            -type f \
+            -name "*.apk" | wc -l)
+
+          if [ "$APK_COUNT" -eq 0 ]; then
+            echo "ERROR: No APK generated!"
+            exit 1
+          fi
+
+          echo "APK successfully generated."
+
+      # 11. Upload APK
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: Team-GopalSingh-debug-APK
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 30
+
+      # 12. Upload build reports if build fails
+      - name: Upload build reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Team-GopalSingh-build-reports
+          path: |
+            android/app/build/reports/**
+            android/app/build/outputs/logs/**
+            android/build/reports/**
+          if-no-files-found: ignore
+          retention-days: 7
