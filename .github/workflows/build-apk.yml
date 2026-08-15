@@ -17,39 +17,30 @@ jobs:
 
     steps:
 
-      # 1. Checkout
       - name: Checkout Repository
         uses: actions/checkout@v5
 
-      # 2. Find ZIP
       - name: Find Project ZIP
         id: find_zip
         shell: bash
         run: |
           set -e
 
-          echo "Searching for project ZIP..."
-
           ZIP_FILE=$(find . -type f \
             \( -name "*.zip" -o -name "*.ZIP" \) \
             -not -path "./.git/*" \
-            | head -n 1)
+            -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "::error::No ZIP file found in repository."
-            echo "Repository files:"
-            find . -maxdepth 3 -type f | head -200
+            echo "::error::No ZIP file found."
+            find . -maxdepth 4 -type f -print
             exit 1
           fi
 
-          echo "ZIP found:"
-          echo "$ZIP_FILE"
-
+          echo "ZIP: $ZIP_FILE"
           echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
 
-      # 3. Extract ZIP
       - name: Extract Project
-        shell: bash
         run: |
           set -e
 
@@ -58,116 +49,154 @@ jobs:
 
           unzip -o "${{ steps.find_zip.outputs.zip_file }}" -d extracted
 
-          echo "Project extracted successfully."
+          echo "ZIP extracted."
 
-          echo "Top-level files:"
-          find extracted -maxdepth 3 -type f | head -150
-
-      # 4. Find Gradle project
       - name: Find Gradle Project
         id: gradle_project
         shell: bash
         run: |
           set -e
 
-          echo "Searching for Gradle wrapper..."
+          echo "Searching Gradle project..."
 
           GRADLE_WRAPPER=$(find extracted \
             -type f \
             -name "gradlew" \
-            -print -quit)
+            -print -quit || true)
 
-          if [ -z "$GRADLE_WRAPPER" ]; then
-            echo "::error::gradlew not found."
+          if [ -n "$GRADLE_WRAPPER" ]; then
 
-            echo "Searching for Gradle files..."
-            find extracted -type f \
-              \( -name "build.gradle" \
-              -o -name "build.gradle.kts" \
-              -o -name "settings.gradle" \
-              -o -name "settings.gradle.kts" \) \
-              -print
+            GRADLE_DIR=$(dirname "$GRADLE_WRAPPER")
+            echo "gradlew found: $GRADLE_WRAPPER"
 
-            exit 1
+          else
+
+            SETTINGS_FILE=$(find extracted \
+              -type f \
+              \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+              -print -quit || true)
+
+            if [ -n "$SETTINGS_FILE" ]; then
+
+              GRADLE_DIR=$(dirname "$SETTINGS_FILE")
+              echo "settings file found: $SETTINGS_FILE"
+
+            else
+
+              BUILD_FILE=$(find extracted \
+                -type f \
+                \( -name "build.gradle" -o -name "build.gradle.kts" \) \
+                -print -quit || true)
+
+              if [ -z "$BUILD_FILE" ]; then
+                echo "::error::No Gradle project found."
+
+                echo "Files inside ZIP:"
+                find extracted -maxdepth 7 -type f -print
+
+                exit 1
+              fi
+
+              GRADLE_DIR=$(dirname "$BUILD_FILE")
+              echo "build file found: $BUILD_FILE"
+
+            fi
           fi
 
-          GRADLE_DIR=$(dirname "$GRADLE_WRAPPER")
-
-          echo "Gradle wrapper:"
-          echo "$GRADLE_WRAPPER"
-
-          echo "Gradle project directory:"
-          echo "$GRADLE_DIR"
-
+          echo "Gradle directory: $GRADLE_DIR"
           echo "gradle_dir=$GRADLE_DIR" >> "$GITHUB_OUTPUT"
 
-      # 5. Setup Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
-          cache: gradle
+          java-version: "17"
 
-      # 6. Verify Java
       - name: Verify Java
         run: |
           java -version
           javac -version
 
-      # 7. Setup Android
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # 8. Show Android environment
-      - name: Check Android Environment
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare Gradle
+        working-directory: ${{ steps.gradle_project.outputs.gradle_dir }}
         shell: bash
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          set -e
 
-          if [ -n "$ANDROID_HOME" ]; then
-            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list | head -50 || true
+          if [ -f "./gradlew" ]; then
+
+            echo "Existing Gradle Wrapper found."
+            chmod +x ./gradlew
+            ./gradlew --version
+
+          else
+
+            echo "Gradle Wrapper not found."
+            echo "Using installed Gradle to generate wrapper."
+
+            gradle --version
+
+            gradle wrapper --gradle-version 8.9
+
+            chmod +x ./gradlew
+
+            echo "Generated Gradle Wrapper:"
+            ./gradlew --version
+
           fi
 
-      # 9. Make Gradle executable
-      - name: Make Gradle Wrapper Executable
-        working-directory: ${{ steps.gradle_project.outputs.gradle_dir }}
-        run: |
-          chmod +x gradlew
-          ls -la gradlew
-
-      # 10. Check Gradle
-      - name: Check Gradle
+      - name: Check Android Project
         working-directory: ${{ steps.gradle_project.outputs.gradle_dir }}
         shell: bash
         run: |
-          ./gradlew --version
+          echo "Project directory:"
+          pwd
 
-      # 11. Build APK
+          echo ""
+          echo "Project files:"
+          find . -maxdepth 5 -type f | head -250
+
+          echo ""
+          echo "Gradle files:"
+          find . -type f \
+            \( -name "build.gradle" \
+            -o -name "build.gradle.kts" \
+            -o -name "settings.gradle" \
+            -o -name "settings.gradle.kts" \) \
+            -print
+
       - name: Build Debug APK
         working-directory: ${{ steps.gradle_project.outputs.gradle_dir }}
         shell: bash
         run: |
+          set -e
           set -o pipefail
 
-          echo "Starting Gradle APK build..."
+          echo "========================================"
+          echo "BUILDING TEAM GOPALSINGH APK"
+          echo "========================================"
+
+          chmod +x ./gradlew
 
           ./gradlew assembleDebug \
             --stacktrace \
             --info \
             --no-daemon
 
-      # 12. Find APK
-      - name: Find Generated APK
+      - name: Find APK
         id: apk
+        working-directory: ${{ steps.gradle_project.outputs.gradle_dir }}
         shell: bash
         run: |
           set -e
 
-          echo "Searching for APK..."
-
-          APK=$(find "${{ steps.gradle_project.outputs.gradle_dir }}" \
+          APK=$(find . \
             -type f \
             -name "*.apk" \
             -print \
@@ -176,24 +205,45 @@ jobs:
           if [ -z "$APK" ]; then
             echo "::error::APK was not generated."
 
-            echo "Searching for build outputs..."
-            find "${{ steps.gradle_project.outputs.gradle_dir }}" \
-              -type f \
+            echo ""
+            echo "Available APK/AAB files:"
+            find . -type f \
               \( -name "*.apk" -o -name "*.aab" \) \
               -print || true
 
             exit 1
           fi
 
-          echo "APK successfully generated:"
+          echo "APK found:"
           echo "$APK"
 
-          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+          echo "apk_path=${{ steps.gradle_project.outputs.gradle_dir }}/$APK" \
+            >> "$GITHUB_OUTPUT"
 
-      # 13. Upload APK
-      - name: Upload Debug APK
+      - name: Prepare APK
+        run: |
+          set -e
+
+          mkdir -p final-apk
+
+          cp "${{ steps.apk.outputs.apk_path }}" \
+            "final-apk/Team-GopalSingh-Debug.apk"
+
+          ls -lh final-apk/Team-GopalSingh-Debug.apk
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Team-GopalSingh-Debug-APK
-          path: ${{ steps.apk.outputs.apk_path }}
+          path: final-apk/Team-GopalSingh-Debug.apk
           if-no-files-found: error
+          retention-days: 30
+
+      - name: Build Summary
+        if: success()
+        run: |
+          echo "========================================"
+          echo "BUILD SUCCESSFUL"
+          echo "========================================"
+          echo "Team-GopalSingh-Debug.apk"
+          echo "Download it from Actions → Artifacts."
