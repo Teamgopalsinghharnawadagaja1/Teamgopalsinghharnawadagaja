@@ -1,267 +1,548 @@
-name: Build Team GopalSingh APK (Diagnostics)
+name: Build Team GopalSingh APK
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main, master ]
-    paths:
-      - '.github/workflows/build-apk.yml'
-      - 'android/**'
-      - 'client/**'
-      - 'package.json'
 
 permissions:
   contents: read
-
-concurrency:
-  group: build-apk-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  GRADLE_VERSION: '9.3.1'
-  ANDROID_PLATFORM: 'android-36'
-  ANDROID_BUILD_TOOLS: '36.0.0'
-  NODE_VERSION: '22'
 
 jobs:
   build:
     name: Build Debug APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+
+    env:
+      ANDROID_DIR: android
+      CLIENT_DIR: client
+      GRADLE_VERSION: "9.3.1"
 
     steps:
-      - name: Checkout
+
+      # =========================================================
+      # 1. Checkout repository
+      # =========================================================
+      - name: Checkout repository
         uses: actions/checkout@v4
 
+      # =========================================================
+      # 2. Setup Java 17
+      # =========================================================
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
-          cache: gradle
+          java-version: "17"
 
+      # =========================================================
+      # 3. Setup Node.js 22
+      # =========================================================
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: client/package.json
+          node-version: "22"
 
+      # =========================================================
+      # 4. Setup Android SDK
+      # =========================================================
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      # =========================================================
+      # 5. Install required Android SDK packages
+      # =========================================================
       - name: Install Android SDK packages
         shell: bash
         run: |
-          set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
+          set -e
+
+          echo "Accepting Android SDK licenses..."
+
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+
+          echo "Installing Android SDK packages..."
+
           sdkmanager \
             "platform-tools" \
-            "platforms;${ANDROID_PLATFORM}" \
-            "build-tools;${ANDROID_BUILD_TOOLS}"
+            "platforms;android-36" \
+            "build-tools;36.0.0"
 
-      - name: Setup Gradle
+          echo "Android SDK installation complete."
+
+      # =========================================================
+      # 6. Setup Gradle 9.3.1
+      # =========================================================
+      - name: Setup Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: ${{ env.GRADLE_VERSION }}
-          cache-read-only: false
+          gradle-version: "9.3.1"
 
-      - name: Print build environment
+      # =========================================================
+      # 7. Create diagnostic directory
+      # =========================================================
+      - name: Prepare diagnostics
         shell: bash
         run: |
-          set -u
-          echo '===== ENVIRONMENT ====='
-          echo "Runner: $RUNNER_OS"
-          echo "Node: $(node --version)"
-          echo "npm: $(npm --version)"
-          echo "Java:"
-          java -version
-          echo "Gradle:"
-          gradle --version
-          echo "Android SDK:"
-          sdkmanager --list_installed 2>/dev/null | head -120 || true
-          echo '======================='
+          set -e
+          mkdir -p build-logs
+          mkdir -p apk-output
 
+      # =========================================================
+      # 8. Verify environment
+      # =========================================================
+      - name: Verify build environment
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "========================================"
+            echo "JAVA"
+            echo "========================================"
+            java -version
+
+            echo
+            echo "========================================"
+            echo "NODE"
+            echo "========================================"
+            node --version
+            npm --version
+
+            echo
+            echo "========================================"
+            echo "GRADLE"
+            echo "========================================"
+            gradle --version
+
+            echo
+            echo "========================================"
+            echo "ANDROID SDK"
+            echo "========================================"
+            sdkmanager --list_installed
+
+          } 2>&1 | tee build-logs/environment.log
+
+      # =========================================================
+      # 9. Validate project structure
+      # =========================================================
       - name: Validate project structure
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
+
+          echo "Checking project structure..."
+
+          test -d android
+          test -d android/app
           test -f android/settings.gradle.kts
+          test -f android/build.gradle.kts
           test -f android/app/build.gradle.kts
+
+          test -d client
           test -f client/package.json
+          test -f client/vite.config.ts
           test -f client/index.html
-          echo 'Project structure OK.'
 
+          echo
+          echo "Project structure:"
+          echo "  android/                 OK"
+          echo "  android/app/             OK"
+          echo "  android/settings.gradle  OK"
+          echo "  android/build.gradle     OK"
+          echo "  client/                  OK"
+          echo "  client/package.json      OK"
+          echo "  client/vite.config.ts    OK"
+
+      # =========================================================
+      # 10. Show Gradle configuration
+      # =========================================================
+      - name: Inspect Gradle configuration
+        shell: bash
+        run: |
+          {
+            echo "========================================"
+            echo "android/settings.gradle.kts"
+            echo "========================================"
+            cat android/settings.gradle.kts
+
+            echo
+            echo "========================================"
+            echo "android/build.gradle.kts"
+            echo "========================================"
+            cat android/build.gradle.kts
+
+            echo
+            echo "========================================"
+            echo "android/app/build.gradle.kts"
+            echo "========================================"
+            cat android/app/build.gradle.kts
+
+          } 2>&1 | tee build-logs/gradle-configuration.log
+
+      # =========================================================
+      # 11. Install web dependencies
+      # =========================================================
       - name: Install web dependencies
-        id: web_install
         working-directory: client
         shell: bash
         run: |
           set -o pipefail
-          echo '===== WEB: npm install ====='
-          npm install --no-audit --no-fund 2>&1 | tee ../web-npm-install.log
-          status=${PIPESTATUS[0]}
-          echo "npm install exit code: $status"
-          exit "$status"
 
-      - name: Build web client
-        id: web_build
-        working-directory: client
-        shell: bash
-        run: |
-          set -o pipefail
-          echo '===== WEB: npm run build ====='
-          npm run build 2>&1 | tee ../web-build.log
-          status=${PIPESTATUS[0]}
-          echo "npm run build exit code: $status"
-          if [ "$status" -ne 0 ]; then
-            echo '===== WEB BUILD FAILED: useful files ====='
-            find . -maxdepth 2 -type f | sort | head -300 || true
+          echo "========================================"
+          echo "INSTALLING WEB DEPENDENCIES"
+          echo "========================================"
+
+          if [ -f package-lock.json ]; then
+            echo "package-lock.json found"
+            npm ci 2>&1 | tee ../build-logs/npm-install.log
+          else
+            echo "No package-lock.json found"
+            echo "Using npm install"
+            npm install 2>&1 | tee ../build-logs/npm-install.log
           fi
-          exit "$status"
 
-      - name: Prepare web assets for Android
+      # =========================================================
+      # 12. Build web client
+      # =========================================================
+      - name: Build web client
+        working-directory: client
         shell: bash
         run: |
-          set -euo pipefail
-          rm -rf android/app/src/main/assets/www
-          mkdir -p android/app/src/main/assets/www
-          cp -a client/dist/. android/app/src/main/assets/www/
-          echo '===== WEB ASSETS ====='
-          du -sh client/dist android/app/src/main/assets/www
-          find android/app/src/main/assets/www -maxdepth 2 -type f | head -100
+          set -o pipefail
 
+          echo "========================================"
+          echo "BUILDING VITE WEB CLIENT"
+          echo "========================================"
+
+          npm run build \
+            2>&1 | tee ../build-logs/npm-build.log
+
+          echo
+          echo "========================================"
+          echo "WEB BUILD FILES"
+          echo "========================================"
+
+          test -d dist
+
+          find dist \
+            -type f \
+            | sort \
+            | tee ../build-logs/web-dist-files.log
+
+      # =========================================================
+      # 13. Copy web build into Android assets
+      # =========================================================
+      - name: Prepare Android web assets
+        shell: bash
+        run: |
+          set -e
+
+          WEB_ASSETS="android/app/src/main/assets/www"
+
+          echo "Cleaning old Android web assets..."
+
+          rm -rf "$WEB_ASSETS"
+
+          mkdir -p "$WEB_ASSETS"
+
+          echo "Copying client/dist..."
+
+          cp -a client/dist/. "$WEB_ASSETS/"
+
+          echo
+          echo "Android assets created:"
+
+          find "$WEB_ASSETS" \
+            -type f \
+            | sort \
+            | tee build-logs/android-assets.log
+
+      # =========================================================
+      # 14. Create debug keystore
+      # =========================================================
       - name: Create debug keystore
         shell: bash
         run: |
-          set -euo pipefail
-          rm -f android/debug.keystore
-          keytool -genkeypair -v \
-            -keystore android/debug.keystore \
+          set -e
+
+          KEYSTORE="android/debug.keystore"
+
+          rm -f "$KEYSTORE"
+
+          echo "Creating debug keystore..."
+
+          keytool -genkeypair \
+            -v \
+            -keystore "$KEYSTORE" \
             -storepass android \
             -alias androiddebugkey \
             -keypass android \
             -keyalg RSA \
             -keysize 2048 \
             -validity 10000 \
-            -dname 'CN=Android Debug,O=Android,C=US'
-          test -f android/debug.keystore
+            -dname "CN=Android Debug,O=Android,C=US" \
+            2>&1 | tee build-logs/keystore.log
 
-      - name: Gradle clean
-        id: gradle_clean
+          test -f "$KEYSTORE"
+
+          echo "Debug keystore created successfully."
+
+      # =========================================================
+      # 15. Check Gradle project
+      # =========================================================
+      - name: Check Gradle project
         working-directory: android
         shell: bash
         run: |
           set -o pipefail
-          echo '===== GRADLE CLEAN ====='
-          gradle clean --no-daemon --stacktrace --info --console=plain 2>&1 | tee ../gradle-clean.log
-          status=${PIPESTATUS[0]}
-          echo "gradle clean exit code: $status"
-          exit "$status"
 
-      - name: Build APK with full diagnostics
-        id: gradle_build
-        continue-on-error: true
+          gradle tasks \
+            --no-daemon \
+            --stacktrace \
+            --warning-mode all \
+            --console=plain \
+            2>&1 | tee ../build-logs/gradle-tasks.log
+
+      # =========================================================
+      # 16. Clean Android project
+      # =========================================================
+      - name: Clean Android project
         working-directory: android
         shell: bash
         run: |
           set -o pipefail
-          echo '===== GRADLE APK BUILD START ====='
-          echo "Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          echo "Gradle: $(gradle --version | grep '^Gradle ' || true)"
-          echo "Java: $(java -version 2>&1 | head -1)"
-          echo '================================='
 
-          # The web app is already built above. Skip the npm Gradle tasks so
-          # the Android build has one clear, separately logged web-build step.
-          gradle assembleDebug \
+          gradle clean \
+            --no-daemon \
+            --stacktrace \
+            --warning-mode all \
+            --console=plain \
+            2>&1 | tee ../build-logs/gradle-clean.log
+
+      # =========================================================
+      # 17. Build APK
+      #
+      # IMPORTANT:
+      # copyWebAssets is skipped because the workflow has already
+      # built client/dist and copied it into Android assets.
+      #
+      # This prevents npm from running twice.
+      # =========================================================
+      - name: Build Debug APK
+        id: build_apk
+        working-directory: android
+        shell: bash
+        run: |
+          set +e
+
+          echo "========================================"
+          echo "STARTING ANDROID APK BUILD"
+          echo "========================================"
+
+          gradle :app:assembleDebug \
+            -x copyWebAssets \
             --no-daemon \
             --stacktrace \
             --info \
-            --console=plain \
             --warning-mode all \
-            -x npmInstallClient \
-            -x npmBuildClient \
-            2>&1 | tee ../gradle-build.log
+            --console=plain \
+            2>&1 | tee ../build-logs/gradle-build.log
 
-          status=${PIPESTATUS[0]}
-          echo "GRADLE_BUILD_EXIT_CODE=$status" | tee ../gradle-build-exit-code.txt
+          EXIT_CODE=${PIPESTATUS[0]}
 
-          if [ "$status" -ne 0 ]; then
-            echo ''
-            echo '========== FIRST FAILURE HINTS =========='
-            grep -n -E 'What went wrong:|Execution failed for task|Caused by:|FAILURE:|error:|ERROR:' ../gradle-build.log | tail -80 || true
-            echo '========================================='
-          fi
+          echo "$EXIT_CODE" > ../build-logs/gradle-exit-code.txt
 
-          exit "$status"
+          echo
+          echo "========================================"
+          echo "GRADLE EXIT CODE: $EXIT_CODE"
+          echo "========================================"
 
-      - name: Collect diagnostics
+          exit "$EXIT_CODE"
+
+      # =========================================================
+      # 18. Find generated APK
+      # =========================================================
+      - name: Locate APK
         if: always()
         shell: bash
         run: |
           set +e
-          mkdir -p diagnostics
 
-          echo '===== JOB RESULT =====' > diagnostics/summary.txt
-          echo "gradle_build=${{ steps.gradle_build.outcome }}" >> diagnostics/summary.txt
-          echo "gradle_clean=${{ steps.gradle_clean.outcome }}" >> diagnostics/summary.txt
-          echo "web_install=${{ steps.web_install.outcome }}" >> diagnostics/summary.txt
-          echo "web_build=${{ steps.web_build.outcome }}" >> diagnostics/summary.txt
-          echo "commit=${GITHUB_SHA}" >> diagnostics/summary.txt
-          echo "ref=${GITHUB_REF}" >> diagnostics/summary.txt
-          echo "run=${GITHUB_RUN_ID}" >> diagnostics/summary.txt
+          echo "========================================"
+          echo "SEARCHING FOR APK"
+          echo "========================================"
 
-          cp -f web-npm-install.log diagnostics/ 2>/dev/null || true
-          cp -f web-build.log diagnostics/ 2>/dev/null || true
-          cp -f gradle-clean.log diagnostics/ 2>/dev/null || true
-          cp -f gradle-build.log diagnostics/ 2>/dev/null || true
-          cp -f gradle-build-exit-code.txt diagnostics/ 2>/dev/null || true
+          find android \
+            -type f \
+            -name "*.apk" \
+            -print \
+            | tee build-logs/apk-files-found.log
 
-          echo '===== GRADLE FAILURE SUMMARY =====' > diagnostics/gradle-failure-summary.txt
-          if [ -f gradle-build.log ]; then
-            grep -n -E 'FAILURE:|What went wrong:|Execution failed for task|Caused by:|error:|ERROR:' gradle-build.log | tail -120 >> diagnostics/gradle-failure-summary.txt || true
+          APK=$(find android \
+            -type f \
+            -path "*/build/outputs/apk/debug/*.apk" \
+            | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo
+            echo "NO APK WAS GENERATED."
+            exit 0
           fi
 
-          echo '===== GENERATED APK FILES =====' >> diagnostics/summary.txt
-          find android -type f -name '*.apk' -print -exec ls -lh {} \; >> diagnostics/summary.txt 2>/dev/null || true
+          echo
+          echo "APK FOUND:"
+          echo "$APK"
 
-          echo '===== PROJECT FILE LIST =====' > diagnostics/project-files.txt
-          find android client -maxdepth 5 -type f | sort | head -1000 >> diagnostics/project-files.txt 2>/dev/null || true
+          cp "$APK" \
+            apk-output/Team-GopalSingh-debug.apk
 
-          echo '===== DIAGNOSTICS DIRECTORY ====='
-          find diagnostics -maxdepth 2 -type f -print | sort
+          echo
+          echo "FINAL APK:"
+          ls -lh apk-output/Team-GopalSingh-debug.apk
 
-      - name: Upload APK artifact
+      # =========================================================
+      # 19. Generate exact error summary
+      # =========================================================
+      - name: Generate exact error summary
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          SUMMARY="build-logs/exact-error-summary.txt"
+
+          echo "========================================" > "$SUMMARY"
+          echo "TEAM GOPAL SINGH APK BUILD DIAGNOSTICS" >> "$SUMMARY"
+          echo "========================================" >> "$SUMMARY"
+          echo >> "$SUMMARY"
+
+          echo "DATE:" >> "$SUMMARY"
+          date >> "$SUMMARY"
+
+          echo >> "$SUMMARY"
+          echo "========================================" >> "$SUMMARY"
+          echo "GRADLE EXIT CODE" >> "$SUMMARY"
+          echo "========================================" >> "$SUMMARY"
+
+          if [ -f build-logs/gradle-exit-code.txt ]; then
+            cat build-logs/gradle-exit-code.txt >> "$SUMMARY"
+          else
+            echo "Gradle build did not start or did not finish." >> "$SUMMARY"
+          fi
+
+          echo >> "$SUMMARY"
+          echo "========================================" >> "$SUMMARY"
+          echo "IMPORTANT ERRORS" >> "$SUMMARY"
+          echo "========================================" >> "$SUMMARY"
+
+          for LOG in \
+            build-logs/npm-install.log \
+            build-logs/npm-build.log \
+            build-logs/gradle-tasks.log \
+            build-logs/gradle-clean.log \
+            build-logs/gradle-build.log
+          do
+
+            if [ -f "$LOG" ]; then
+
+              echo >> "$SUMMARY"
+              echo "----------- $LOG -----------" >> "$SUMMARY"
+
+              grep -n -E \
+                "FAILURE:|What went wrong:|Execution failed for task|Caused by:|AAPT2|Manifest merger failed|error:|ERROR|Exception|npm ERR!|TS[0-9]+" \
+                "$LOG" \
+                | tail -250 >> "$SUMMARY"
+
+            fi
+
+          done
+
+          echo >> "$SUMMARY"
+          echo "========================================" >> "$SUMMARY"
+          echo "LAST 300 GRADLE LOG LINES" >> "$SUMMARY"
+          echo "========================================" >> "$SUMMARY"
+
+          if [ -f build-logs/gradle-build.log ]; then
+            tail -300 build-logs/gradle-build.log >> "$SUMMARY"
+          fi
+
+          echo
+          echo "========================================"
+          echo "EXACT ERROR SUMMARY"
+          echo "========================================"
+
+          cat "$SUMMARY"
+
+      # =========================================================
+      # 20. Upload APK
+      # =========================================================
+      - name: Upload APK
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Team-GopalSingh-APK-${{ github.run_number }}
-          path: |
-            android/**/build/outputs/apk/**/*.apk
-            android/**/build/outputs/apk/**/*.aab
+          name: Team-GopalSingh-APK
+          path: apk-output/Team-GopalSingh-debug.apk
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 30
 
+      # =========================================================
+      # 21. Upload complete diagnostics
+      # =========================================================
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Team-GopalSingh-Build-Diagnostics-${{ github.run_number }}
+          name: Team-GopalSingh-Build-Diagnostics
           path: |
-            diagnostics/**
-            web-npm-install.log
-            web-build.log
-            gradle-clean.log
-            gradle-build.log
-            gradle-build-exit-code.txt
+            build-logs/**
+            android/**/build/reports/**
+            android/**/build/outputs/logs/**
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 30
 
-      - name: Fail workflow if APK build failed
-        if: steps.gradle_build.outcome == 'failure'
+      # =========================================================
+      # 22. Final status
+      # =========================================================
+      - name: Final build status
+        if: always()
         shell: bash
         run: |
-          echo '❌ APK build failed.'
-          echo 'Open the Build Diagnostics artifact and inspect gradle-failure-summary.txt and gradle-build.log.'
-          exit 1
+          if [ -f build-logs/gradle-exit-code.txt ]; then
+
+            EXIT_CODE=$(cat build-logs/gradle-exit-code.txt)
+
+            if [ "$EXIT_CODE" != "0" ]; then
+
+              echo "========================================"
+              echo "APK BUILD FAILED"
+              echo "========================================"
+
+              echo
+              echo "Open this artifact:"
+              echo "Team-GopalSingh-Build-Diagnostics"
+
+              echo
+              echo "Main file:"
+              echo "exact-error-summary.txt"
+
+              exit "$EXIT_CODE"
+            fi
+
+          fi
+
+          if [ ! -f apk-output/Team-GopalSingh-debug.apk ]; then
+
+            echo "========================================"
+            echo "APK NOT FOUND"
+            echo "========================================"
+
+            echo "Check:"
+            echo "Team-GopalSingh-Build-Diagnostics"
+
+            exit 1
+          fi
+
+          echo "========================================"
+          echo "APK BUILD SUCCESSFUL"
+          echo "========================================"
+
+          ls -lh apk-output/Team-GopalSingh-debug.apk
