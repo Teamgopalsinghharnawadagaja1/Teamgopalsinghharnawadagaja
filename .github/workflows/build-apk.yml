@@ -16,40 +16,40 @@ jobs:
 
     steps:
 
-      # 1. Checkout repository
-      - name: Checkout
+      # 1. Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Setup Java
+      # 2. Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
-      # 3. Setup Node
+      # 3. Node 20
       - name: Setup Node 20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: npm
 
-      # 4. Setup Android SDK
+      # 4. Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # 5. Extract Android project
+      # 5. Extract ZIP
       - name: Extract project
         shell: bash
         run: |
           set -e
 
-          echo "Checking ZIP file..."
-          ls -lah
+          ZIP_FILE="./team-gopal-singh-merged-app-android.zip"
 
-          if [ ! -f "./team-gopal-singh-merged-app-android.zip" ]; then
-            echo "ERROR: ZIP file not found!"
+          echo "Checking ZIP..."
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: ZIP file not found:"
+            echo "$ZIP_FILE"
             exit 1
           fi
 
@@ -57,151 +57,222 @@ jobs:
 
           mkdir -p extracted
 
-          unzip -q \
-            "./team-gopal-singh-merged-app-android.zip" \
-            -d extracted
+          echo "Extracting project..."
 
-          echo "Extracted files:"
-          find extracted -maxdepth 3 -type f | sort | head -300
+          unzip -q "$ZIP_FILE" -d extracted
 
-          if [ ! -d "extracted/android" ]; then
-            echo "ERROR: extracted/android folder not found!"
+          echo ""
+          echo "ZIP contents:"
+          find extracted -maxdepth 5 -type f | sort | head -1000
+
+          # -----------------------------------------------------
+          # Find Gradle wrapper
+          # -----------------------------------------------------
+
+          GRADLEW_PATH=$(find extracted \
+            -type f \
+            -name "gradlew" \
+            -print -quit)
+
+          if [ -z "$GRADLEW_PATH" ]; then
+            echo ""
+            echo "ERROR: gradlew not found in ZIP."
             exit 1
           fi
 
-          cp -a extracted/android android
+          echo ""
+          echo "gradlew found:"
+          echo "$GRADLEW_PATH"
 
-          if [ -d "extracted/client" ]; then
-            cp -a extracted/client client
-          fi
+          ANDROID_DIR=$(dirname "$GRADLEW_PATH")
 
           echo ""
-          echo "Android project:"
-          find android -maxdepth 4 -type f | sort | head -300
+          echo "Android project root:"
+          echo "$ANDROID_DIR"
 
-      # 6. Verify Gradle wrapper
+          # -----------------------------------------------------
+          # Verify Android Gradle project before copying
+          # -----------------------------------------------------
+
+          if [ ! -f "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.properties" ]; then
+            echo ""
+            echo "ERROR: gradle-wrapper.properties not found."
+            echo "The directory containing gradlew does not appear to be"
+            echo "a complete Gradle project."
+            exit 1
+          fi
+
+          if [ ! -f "$ANDROID_DIR/settings.gradle" ] &&
+             [ ! -f "$ANDROID_DIR/settings.gradle.kts" ]; then
+            echo ""
+            echo "ERROR: settings.gradle or settings.gradle.kts not found."
+            exit 1
+          fi
+
+          # -----------------------------------------------------
+          # Copy Android project
+          # -----------------------------------------------------
+
+          mkdir -p android
+
+          cp -a "$ANDROID_DIR"/. android/
+
+          echo ""
+          echo "Android project copied successfully."
+
+          find android -maxdepth 5 -type f | sort | head -1000
+
+      # 6. Verify Gradle
       - name: Verify Gradle wrapper
         working-directory: android
         shell: bash
         run: |
           set -e
 
-          if [ ! -f "./gradlew" ]; then
-            echo "ERROR: gradlew not found!"
-            echo ""
-            echo "The Android project must contain:"
-            echo "android/gradlew"
-            echo "android/gradle/wrapper/gradle-wrapper.properties"
+          echo "========================================"
+          echo "Gradle Verification"
+          echo "========================================"
+
+          chmod +x gradlew
+
+          if [ ! -f "gradlew" ]; then
+            echo "ERROR: gradlew missing."
             exit 1
           fi
 
-          chmod +x ./gradlew
+          if [ ! -f "gradle/wrapper/gradle-wrapper.properties" ]; then
+            echo "ERROR: gradle-wrapper.properties missing."
+            exit 1
+          fi
 
-          echo "Gradle wrapper found."
+          echo ""
+          echo "Gradle wrapper configuration:"
+          cat gradle/wrapper/gradle-wrapper.properties
+
+          echo ""
+          echo "Gradle version:"
           ./gradlew --version
 
-      # 7. Check Android SDK
-      - name: Check Android environment
+      # 7. Find optional client
+      - name: Prepare client
         shell: bash
         run: |
           set -e
 
-          echo "Java:"
-          java -version
+          CLIENT_PACKAGE=$(find extracted \
+            -path "*/android/*" -prune \
+            -o -type f -name "package.json" -print \
+            | head -n 1)
 
-          echo ""
-          echo "Node:"
-          node --version
+          if [ -n "$CLIENT_PACKAGE" ]; then
 
-          echo ""
-          echo "npm:"
-          npm --version
+            CLIENT_DIR=$(dirname "$CLIENT_PACKAGE")
 
-          echo ""
-          echo "Android SDK:"
-          echo "$ANDROID_HOME"
+            echo "Client found:"
+            echo "$CLIENT_DIR"
 
-          echo ""
-          echo "Installed SDK packages:"
-          sdkmanager --list_installed || true
+            mkdir -p client
 
-      # 8. Install client dependencies if package.json exists
-      - name: Install client dependencies
+            cp -a "$CLIENT_DIR"/. client/
+
+          else
+
+            echo "No separate client project found."
+            echo "Skipping client setup."
+
+          fi
+
+      # 8. Install npm dependencies if needed
+      - name: Install Node dependencies
         shell: bash
         run: |
           set -e
 
-          if [ -d "client" ] && [ -f "client/package.json" ]; then
-            echo "Installing client dependencies..."
+          if [ -f "client/package.json" ]; then
 
             cd client
+
+            echo "Installing Node dependencies..."
 
             if [ -f "package-lock.json" ]; then
               npm ci
             else
               npm install
             fi
+
           else
-            echo "No client/package.json found."
+
+            echo "No client/package.json."
             echo "Skipping npm install."
+
           fi
 
-      # 9. Build Debug APK
+      # 9. Build APK
       - name: Build Debug APK
         working-directory: android
         shell: bash
         run: |
           set -e
 
-          chmod +x ./gradlew
+          chmod +x gradlew
+
+          echo "========================================"
+          echo "Building Team GopalSingh Debug APK"
+          echo "========================================"
 
           ./gradlew clean assembleDebug \
             --no-daemon \
             --stacktrace \
             --console=plain
 
-      # 10. Find generated APK
+      # 10. Find APK
       - name: Find APK
         shell: bash
         run: |
           set -e
 
-          echo "Searching for APK..."
+          echo "========================================"
+          echo "Checking generated APK"
+          echo "========================================"
 
-          find android/app/build/outputs \
+          find android \
             -type f \
             -name "*.apk" \
+            -path "*/build/outputs/*" \
             -print
 
-          APK_COUNT=$(find android/app/build/outputs \
+          APK_COUNT=$(find android \
             -type f \
-            -name "*.apk" | wc -l)
+            -name "*.apk" \
+            -path "*/build/outputs/*" \
+            | wc -l)
 
           if [ "$APK_COUNT" -eq 0 ]; then
-            echo "ERROR: No APK generated!"
+            echo ""
+            echo "ERROR: APK was not generated."
             exit 1
           fi
 
-          echo "APK successfully generated."
+          echo ""
+          echo "SUCCESS: APK generated."
 
       # 11. Upload APK
-      - name: Upload Debug APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Team-GopalSingh-debug-APK
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: android/**/build/outputs/apk/**/*.apk
           if-no-files-found: error
           retention-days: 30
 
-      # 12. Upload build reports if build fails
+      # 12. Upload reports on failure
       - name: Upload build reports
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: Team-GopalSingh-build-reports
           path: |
-            android/app/build/reports/**
-            android/app/build/outputs/logs/**
-            android/build/reports/**
+            android/**/build/reports/**
+            android/**/build/outputs/logs/**
           if-no-files-found: ignore
           retention-days: 7
