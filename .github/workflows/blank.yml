@@ -2,10 +2,6 @@ name: Build Team GopalSingh APK
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
 
 permissions:
   contents: read
@@ -17,226 +13,207 @@ jobs:
 
     steps:
 
+      # 1. Checkout repository
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2. Find ZIP
       - name: Find ZIP
-        id: find_zip
         shell: bash
         run: |
           set -e
-          ZIP_NAME="team-gopal-singh-merged-app-android.zip"
-          if [ -f "$ZIP_NAME" ]; then
-            ZIP_FILE="$ZIP_NAME"
-          else
-            ZIP_FILE="$(find . -type f -iname "*.zip" -not -path "./.git/*" -print -quit || true)"
-          fi
+
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n 1)
+
           if [ -z "$ZIP_FILE" ]; then
-            echo "::error::No ZIP found."
+            echo "ERROR: ZIP file not found"
             exit 1
           fi
-          echo "ZIP: $ZIP_FILE"
-          echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
 
+          echo "Found: $ZIP_FILE"
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+
+      # 3. Extract ZIP
       - name: Extract project
         shell: bash
         run: |
           set -e
-          rm -rf extracted
-          mkdir -p extracted
-          unzip -o "${{ steps.find_zip.outputs.zip_file }}" -d extracted
-          find extracted -maxdepth 7 -type f | head -200
 
+          rm -rf project
+          mkdir project
+
+          unzip -q "$ZIP_FILE" -d project
+
+          echo "Project extracted."
+
+      # 4. Find Android project
       - name: Find Android project
-        id: gradle_project
         shell: bash
         run: |
           set -e
-          GRADLE_DIR=""
-          WRAPPER="$(find extracted -type f -name "gradlew" -print -quit || true)"
-          if [ -n "$WRAPPER" ]; then
-            GRADLE_DIR="$(dirname "$WRAPPER")"
-          fi
-          if [ -z "$GRADLE_DIR" ]; then
-            SETTINGS="$(find extracted -type f \( -name "settings.gradle" -o -name "settings.gradle.kts" \) -print -quit || true)"
-            if [ -n "$SETTINGS" ]; then
-              GRADLE_DIR="$(dirname "$SETTINGS")"
-            fi
-          fi
-          if [ -z "$GRADLE_DIR" ]; then
-            echo "::error::No Gradle project found."
+
+          SETTINGS=$(find project \
+            -type f \
+            \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
+            | head -n 1)
+
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: Android Gradle project not found"
+            find project -maxdepth 6 -type f | head -300
             exit 1
           fi
-          echo "Gradle root: $GRADLE_DIR"
-          echo "gradle_dir=$GRADLE_DIR" >> "$GITHUB_OUTPUT"
 
+          PROJECT_DIR=$(dirname "$SETTINGS")
+
+          echo "Android project:"
+          echo "$PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      # 5. Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
+      # 6. Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      # 7. Install Android SDK 36
       - name: Install Android SDK
         shell: bash
         run: |
-          set +e
-          yes | sdkmanager --licenses > /dev/null 2>&1
-          sdkmanager "platforms;android-35" "build-tools;35.0.0" > /dev/null 2>&1
-          exit 0
+          yes | sdkmanager --licenses >/dev/null || true
 
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      # 8. Gradle 9.3.1
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
 
+      # 9. Verify environment
       - name: Verify environment
         shell: bash
         run: |
+          set -e
+
+          echo "===== JAVA ====="
           java -version
-          node --version
-          npm --version
-          echo "ANDROID_HOME: ${ANDROID_HOME:-not-set}"
 
-      - name: Create local.properties
-        shell: bash
-        run: |
-          echo "sdk.dir=$ANDROID_HOME" > ${{ steps.gradle_project.outputs.gradle_dir }}/local.properties
-          cat ${{ steps.gradle_project.outputs.gradle_dir }}/local.properties
+          echo "===== GRADLE ====="
+          gradle --version
 
-      - name: Force Gradle 8.11.1
-        working-directory: ${{ steps.gradle_project.outputs.gradle_dir }}
+          echo "===== SDK ====="
+          sdkmanager --list_installed | head -100
+
+      # 10. Verify project
+      - name: Verify project
         shell: bash
         run: |
           set -e
-          PROPS="gradle/wrapper/gradle-wrapper.properties"
-          NEW_URL="https\\://services.gradle.org/distributions/gradle-8.11.1-bin.zip"
-          if [ -f "$PROPS" ]; then
-            sed -i "s|distributionUrl=.*|distributionUrl=${NEW_URL}|" "$PROPS"
-            cat "$PROPS"
+
+          test -f "$PROJECT_DIR/settings.gradle.kts" \
+            || test -f "$PROJECT_DIR/settings.gradle"
+
+          test -f "$PROJECT_DIR/app/build.gradle.kts"
+
+          test -d "$PROJECT_DIR/app"
+
+          echo "Android project OK."
+
+      # 11. Create debug keystore
+      - name: Create debug keystore
+        shell: bash
+        run: |
+          set -e
+
+          KEYSTORE="$PROJECT_DIR/debug.keystore"
+
+          rm -f "$KEYSTORE"
+
+          keytool -genkeypair \
+            -v \
+            -keystore "$KEYSTORE" \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+          test -f "$KEYSTORE"
+
+          echo "Debug keystore ready."
+
+      # 12. Check Google Services
+      - name: Check Google Services
+        shell: bash
+        run: |
+          GOOGLE=$(find "$PROJECT_DIR" \
+            -name "google-services.json" \
+            -type f \
+            | head -n 1)
+
+          if [ -n "$GOOGLE" ]; then
+            echo "google-services.json found."
           else
-            gradle wrapper --gradle-version 8.11.1
+            echo "google-services.json not found."
+            echo "Continuing build."
           fi
-          chmod +x ./gradlew
-          ./gradlew --version
 
-      - name: NPM Install
-        working-directory: ${{ steps.gradle_project.outputs.gradle_dir }}
+      # 13. Clean
+      - name: Clean
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-          set -e
-          PKG_FILES="$(find . -name "package.json" -not -path "*/node_modules/*" -not -path "*/.git/*" -print)"
-          if [ -z "$PKG_FILES" ]; then
-            echo "No package.json found — skipping."
-            exit 0
-          fi
-          echo "$PKG_FILES" | while read PKG; do
-            DIR="$(dirname "$PKG")"
-            echo "npm install in: $DIR"
-            cd "$DIR"
-            npm install --legacy-peer-deps
-            cd - > /dev/null
-          done
+          gradle clean \
+            --no-daemon \
+            --stacktrace
 
-      - name: NPM Build
-        working-directory: ${{ steps.gradle_project.outputs.gradle_dir }}
-        shell: bash
-        env:
-          NODE_OPTIONS: "--max-old-space-size=4096"
-          CI: "false"
-        run: |
-          set -e
-          PKG_FILES="$(find . -name "package.json" -not -path "*/node_modules/*" -not -path "*/.git/*" -print)"
-          if [ -z "$PKG_FILES" ]; then
-            echo "No package.json — skipping."
-            exit 0
-          fi
-          echo "$PKG_FILES" | while read PKG; do
-            DIR="$(dirname "$PKG")"
-            HAS_BUILD="$(node -e "const p=require('$DIR/package.json');console.log(p.scripts&&p.scripts.build?'yes':'no')" 2>/dev/null || echo "no")"
-            if [ "$HAS_BUILD" = "yes" ]; then
-              echo "npm run build in: $DIR"
-              cd "$DIR"
-              npm run build
-              cd - > /dev/null
-            fi
-          done
-
+      # 14. Build APK
       - name: Build APK
-        id: build_apk
-        working-directory: ${{ steps.gradle_project.outputs.gradle_dir }}
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
-        env:
-          NODE_OPTIONS: "--max-old-space-size=4096"
-          CI: "false"
         run: |
-          set -o pipefail
-          chmod +x ./gradlew
-          ./gradlew assembleDebug \
+          gradle assembleDebug \
             --no-daemon \
             --stacktrace \
-            --console=plain
+            --warning-mode all
 
-      - name: Find APK
-        id: apk
-        if: success()
-        working-directory: ${{ steps.gradle_project.outputs.gradle_dir }}
+      # 15. Locate APK
+      - name: Locate APK
         shell: bash
         run: |
           set -e
-          APK="$(find . -type f -name "*.apk" -print | head -n 1)"
+
+          APK=$(find "$PROJECT_DIR" \
+            -type f \
+            -path "*/build/outputs/apk/debug/*.apk" \
+            | head -n 1)
+
           if [ -z "$APK" ]; then
-            echo "::error::APK not found."
+            echo "ERROR: APK was not generated."
             exit 1
           fi
-          echo "APK: $APK"
-          du -h "$APK"
-          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare Final APK
-        if: success()
-        working-directory: ${{ steps.gradle_project.outputs.gradle_dir }}
-        shell: bash
-        run: |
-          set -e
-          rm -rf "$GITHUB_WORKSPACE/final-apk"
-          mkdir -p "$GITHUB_WORKSPACE/final-apk"
-          cp "${{ steps.apk.outputs.apk_path }}" \
-            "$GITHUB_WORKSPACE/final-apk/Team-GopalSingh-Debug.apk"
-          ls -lh "$GITHUB_WORKSPACE/final-apk/Team-GopalSingh-Debug.apk"
+          echo "APK FOUND:"
+          echo "$APK"
 
-      - name: Upload Team GopalSingh APK
-        if: success()
+          ls -lh "$APK"
+
+      # 16. Upload APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Team-GopalSingh-Debug-APK
-          path: final-apk/Team-GopalSingh-Debug.apk
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload Build Reports
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Team-GopalSingh-Build-Diagnostics
+          name: Team-GopalSingh-APK
           path: |
-            **/build/reports/**
-            **/build/outputs/**
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Build Successful
-        if: success()
-        shell: bash
-        run: |
-          echo "========================================"
-          echo "        BUILD SUCCESSFUL ✅"
-          echo "APK      : Team-GopalSingh-Debug.apk"
-          echo "Artifact : Team-GopalSingh-Debug-APK"
-          echo "Location : Actions → Run → Artifacts"
-          echo "========================================"
+            ${{ env.PROJECT_DIR }}/**/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
