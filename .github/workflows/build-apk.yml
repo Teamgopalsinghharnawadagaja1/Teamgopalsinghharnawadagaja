@@ -3,8 +3,7 @@ name: Build Team GopalSingh APK
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
@@ -18,98 +17,60 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Node 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Setup Android SDK
+      - name: Setup Android
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK
-        run: |
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0"
-
-      - name: Extract project
+      - name: Build APK
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          if [ -d "android" ]; then
-            echo "android/ already exists."
-            exit 0
-          fi
-
-          ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' | head -n 1)"
-
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No project ZIP found."
+          if [ -f "android/gradlew" ]; then
+            cd android
+          elif [ -f "gradlew" ]; then
+            :
+          else
+            echo "ERROR: Gradle project not found"
+            find . -maxdepth 3 -type f | sort
             exit 1
           fi
 
-          echo "Using ZIP: $ZIP_FILE"
+          chmod +x gradlew
 
-          mkdir -p extracted
-          unzip -q "$ZIP_FILE" -d extracted
-
-          ANDROID_DIR="$(find extracted -type d -name android | head -n 1)"
-
-          if [ -z "$ANDROID_DIR" ]; then
-            echo "ERROR: android/ directory not found inside ZIP."
-            find extracted -maxdepth 5 -type d
-            exit 1
-          fi
-
-          echo "Found Android project: $ANDROID_DIR"
-
-          cp -a "$ANDROID_DIR" ./android
-
-          PROJECT_ROOT="$(dirname "$ANDROID_DIR")"
-
-          if [ -d "$PROJECT_ROOT/client" ]; then
-            cp -a "$PROJECT_ROOT/client" ./client
-            echo "client/ copied."
-          fi
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.3.1'
-
-      - name: Create debug keystore
-        working-directory: android
-        run: |
-          keytool -genkeypair \
-            -v \
-            -keystore debug.keystore \
-            -storepass android \
-            -keypass android \
-            -alias androiddebugkey \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
-
-      - name: Build APK
-        working-directory: android
-        run: |
-          gradle assembleDebug \
+          ./gradlew clean assembleDebug \
             --no-daemon \
-            --stacktrace
+            --no-build-cache \
+            --stacktrace \
+            --console=plain
+
+      - name: Find APK
+        shell: bash
+        run: |
+          set -e
+          mkdir -p apk-output
+
+          APK=$(find . \
+            -path "*/build/outputs/apk/debug/*.apk" \
+            -type f \
+            | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not created"
+            exit 1
+          fi
+
+          echo "APK found: $APK"
+          cp "$APK" apk-output/Team-GopalSingh-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Team-GopalSingh-debug-APK
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: apk-output/Team-GopalSingh-debug.apk
           if-no-files-found: error
