@@ -40,12 +40,54 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-      - name: Setup Gradle 9.3.1
+      - name: Extract project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -d "android" ]; then
+            echo "android/ already exists."
+            exit 0
+          fi
+
+          ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' | head -n 1)"
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No project ZIP found."
+            exit 1
+          fi
+
+          echo "Using ZIP: $ZIP_FILE"
+
+          mkdir -p extracted
+          unzip -q "$ZIP_FILE" -d extracted
+
+          ANDROID_DIR="$(find extracted -type d -name android | head -n 1)"
+
+          if [ -z "$ANDROID_DIR" ]; then
+            echo "ERROR: android/ directory not found inside ZIP."
+            find extracted -maxdepth 5 -type d
+            exit 1
+          fi
+
+          echo "Found Android project: $ANDROID_DIR"
+
+          cp -a "$ANDROID_DIR" ./android
+
+          PROJECT_ROOT="$(dirname "$ANDROID_DIR")"
+
+          if [ -d "$PROJECT_ROOT/client" ]; then
+            cp -a "$PROJECT_ROOT/client" ./client
+            echo "client/ copied."
+          fi
+
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
 
       - name: Create debug keystore
+        working-directory: android
         run: |
           keytool -genkeypair \
             -v \
