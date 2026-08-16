@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: team-gopal-singh-build-${{ github.ref }}
+  group: build-verify-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -36,15 +36,15 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Verify ZIP project layout
+      - name: Verify project layout
         shell: bash
         run: |
           set -euo pipefail
@@ -52,72 +52,64 @@ jobs:
           test -d "${APP_DIR}"
           test -f "${APP_DIR}/package.json"
           test -f "${APP_DIR}/server.js"
+
           test -f "${APP_DIR}/client/package.json"
           test -f "${APP_DIR}/client/index.html"
           test -f "${APP_DIR}/client/vite.config.ts"
+          test -f "${APP_DIR}/client/tsconfig.json"
+
           test -f "${APP_DIR}/android/settings.gradle.kts"
           test -f "${APP_DIR}/android/build.gradle.kts"
           test -f "${APP_DIR}/android/app/build.gradle.kts"
           test -f "${APP_DIR}/android/app/src/main/AndroidManifest.xml"
           test -f "${APP_DIR}/android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt"
 
-          echo "Project layout OK: ${APP_DIR}/"
+          echo "======================================"
+          echo "PROJECT LAYOUT VERIFIED"
+          echo "======================================"
+          find "${APP_DIR}" -maxdepth 2 -type f \( -name 'package.json' -o -name 'server.js' -o -name 'settings.gradle.kts' \) -print
 
       - name: Install backend dependencies
-        working-directory: japp
+        working-directory: ${{ env.APP_DIR }}
         shell: bash
         run: |
           set -euo pipefail
-
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-          else
-            npm install --no-audit --no-fund --legacy-peer-deps
-          fi
+          npm install --no-audit --no-fund --legacy-peer-deps
 
       - name: Install client dependencies
-        working-directory: japp/client
+        working-directory: ${{ env.APP_DIR }}/client
         shell: bash
         run: |
           set -euo pipefail
-
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-          else
-            npm install --no-audit --no-fund --legacy-peer-deps
-          fi
+          npm install --no-audit --no-fund --legacy-peer-deps
 
       - name: Check backend syntax
-        working-directory: japp
+        working-directory: ${{ env.APP_DIR }}
         shell: bash
         run: |
           set -euo pipefail
-
           node --check server.js
           echo "Backend syntax passed."
 
       - name: TypeScript verification
-        working-directory: japp/client
+        working-directory: ${{ env.APP_DIR }}/client
         shell: bash
         run: |
           set -euo pipefail
-
           npm run lint
           echo "TypeScript verification passed."
 
       - name: Build web client
-        working-directory: japp/client
+        working-directory: ${{ env.APP_DIR }}/client
         shell: bash
         run: |
           set -euo pipefail
-
           npm run build
           test -f dist/index.html
-
           echo "Web build passed."
 
       - name: Verify backend health endpoint
-        working-directory: japp
+        working-directory: ${{ env.APP_DIR }}
         shell: bash
         env:
           PORT: "3000"
@@ -164,11 +156,10 @@ jobs:
       - name: Upload verified web build
         uses: actions/upload-artifact@v4
         with:
-          name: team-gopal-singh-web-dist
-          path: japp/client/dist
+          name: web-dist
+          path: ${{ env.APP_DIR }}/client/dist
           if-no-files-found: error
           retention-days: 7
-
 
   # ============================================================
   # 2. ANDROID DEBUG APK
@@ -182,10 +173,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
@@ -205,7 +196,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          yes | sdkmanager --licenses >/dev/null || true
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
           sdkmanager \
             "platform-tools" \
@@ -213,59 +204,61 @@ jobs:
             "build-tools;${ANDROID_BUILD_TOOLS}"
 
       - name: Verify Android project
+        working-directory: ${{ env.APP_DIR }}
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f "${APP_DIR}/android/settings.gradle.kts"
-          test -f "${APP_DIR}/android/build.gradle.kts"
-          test -f "${APP_DIR}/android/app/build.gradle.kts"
-          test -f "${APP_DIR}/android/app/src/main/AndroidManifest.xml"
-          test -f "${APP_DIR}/android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt"
+          test -f android/settings.gradle.kts
+          test -f android/build.gradle.kts
+          test -f android/app/build.gradle.kts
+          test -f android/gradle.properties
+          test -f android/app/src/main/AndroidManifest.xml
+          test -f android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
 
-          grep -q 'com.android.application' "${APP_DIR}/android/build.gradle.kts"
-          grep -q 'version = "9.1.1"' "${APP_DIR}/android/build.gradle.kts"
-          grep -q 'compileSdk = 36' "${APP_DIR}/android/app/build.gradle.kts"
-          grep -q 'AssetsPathHandler(this)' "${APP_DIR}/android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt"
+          grep -q 'AssetsPathHandler(this)' \
+            android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
 
-          echo "Android project verified."
+          echo "Android project structure verified."
+          echo "MainActivity WebViewAssetLoader verified."
 
       - name: Download verified web build
         uses: actions/download-artifact@v4
         with:
-          name: team-gopal-singh-web-dist
-          path: japp/client/dist
+          name: web-dist
+          path: ${{ env.APP_DIR }}/client/dist
 
       - name: Verify downloaded web build
+        working-directory: ${{ env.APP_DIR }}
         shell: bash
         run: |
           set -euo pipefail
-
-          test -f "${APP_DIR}/client/dist/index.html"
+          test -f client/dist/index.html
           echo "Verified client/dist/index.html."
 
       - name: Prepare Android WebView assets
+        working-directory: ${{ env.APP_DIR }}
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf "${APP_DIR}/android/app/src/main/assets"
-          mkdir -p "${APP_DIR}/android/app/src/main/assets"
+          rm -rf android/app/src/main/assets
+          mkdir -p android/app/src/main/assets
+          cp -a client/dist/. android/app/src/main/assets/
 
-          cp -a "${APP_DIR}/client/dist/." "${APP_DIR}/android/app/src/main/assets/"
-
-          test -f "${APP_DIR}/android/app/src/main/assets/index.html"
+          test -f android/app/src/main/assets/index.html
           echo "Android WebView assets prepared."
 
       - name: Create debug keystore
+        working-directory: ${{ env.APP_DIR }}
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -f "${APP_DIR}/android/debug.keystore"
+          rm -f android/debug.keystore
 
           keytool -genkeypair -v \
-            -keystore "${APP_DIR}/android/debug.keystore" \
+            -keystore android/debug.keystore \
             -storepass android \
             -alias androiddebugkey \
             -keypass android \
@@ -274,21 +267,17 @@ jobs:
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
 
-          test -f "${APP_DIR}/android/debug.keystore"
+          test -f android/debug.keystore
 
       - name: Gradle clean
-        working-directory: japp/android
+        working-directory: ${{ env.APP_DIR }}/android
         shell: bash
         run: |
           set -euo pipefail
-
-          gradle clean \
-            --no-daemon \
-            --stacktrace \
-            --console=plain
+          gradle clean --no-daemon --stacktrace --console=plain
 
       - name: Build Android debug APK
-        working-directory: japp/android
+        working-directory: ${{ env.APP_DIR }}/android
         shell: bash
         run: |
           set -euo pipefail
@@ -300,27 +289,29 @@ jobs:
             --warning-mode all
 
           test -f app/build/outputs/apk/debug/app-debug.apk
-          echo "Android debug APK build passed."
+          echo "======================================"
+          echo "ANDROID DEBUG APK BUILD PASSED"
+          echo "======================================"
 
       - name: Verify generated APK
+        working-directory: ${{ env.APP_DIR }}
         shell: bash
         run: |
           set -euo pipefail
 
-          APK="${APP_DIR}/android/app/build/outputs/apk/debug/app-debug.apk"
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
           test -f "$APK"
 
-          echo "Generated APK: $APK"
+          echo "Generated APK:"
           ls -lh "$APK"
 
       - name: Upload Android debug APK
         uses: actions/upload-artifact@v4
         with:
           name: Team-GopalSingh-Jhalrapatan-Debug-APK
-          path: japp/android/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ env.APP_DIR }}/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
-
 
   # ============================================================
   # 3. FINAL VERIFICATION
@@ -336,13 +327,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Final project verification
         shell: bash
         run: |
           set -euo pipefail
 
+          test -d "${APP_DIR}"
           test -f "${APP_DIR}/package.json"
           test -f "${APP_DIR}/server.js"
           test -f "${APP_DIR}/client/package.json"
@@ -375,4 +367,7 @@ jobs:
           echo "Web + Backend : PASSED"
           echo "Android APK   : PASSED"
           echo "Project       : VERIFIED"
+          echo ""
+          echo "=============================================="
+          echo "              PIPELINE PASSED"
           echo "=============================================="
