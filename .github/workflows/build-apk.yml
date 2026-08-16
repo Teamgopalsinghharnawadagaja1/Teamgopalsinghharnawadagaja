@@ -2,10 +2,6 @@ name: Build APK
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
 
 permissions:
   contents: read
@@ -16,76 +12,82 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Show repository files
-        run: |
-          echo "===== REPOSITORY ====="
-          find . -maxdepth 3 -type f | sort
 
       - name: Find and extract project ZIP
         shell: bash
         run: |
           set -e
 
-          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
+          ZIP=$(find . -maxdepth 2 -type f -iname "*.zip" | head -1)
 
-          if [ -z "$ZIP_FILE" ]; then
+          if [ -z "$ZIP" ]; then
             echo "ERROR: Project ZIP not found."
             exit 1
           fi
 
-          echo "Using ZIP: $ZIP_FILE"
+          echo "ZIP: $ZIP"
 
+          rm -rf extracted
           mkdir -p extracted
-          unzip -q "$ZIP_FILE" -d extracted
+          unzip -q "$ZIP" -d extracted
 
-          echo "===== EXTRACTED FILES ====="
-          find extracted -maxdepth 4 -type f | sort | head -300
+          echo "ZIP extracted successfully."
 
-      - name: Detect project root
+      - name: Detect correct project root
         shell: bash
         run: |
           set -e
 
-          PROJECT_ROOT=""
+          ROOT=""
 
-          # Look for Android project + package.json.
           while IFS= read -r dir; do
-            if [ -f "$dir/package.json" ] && [ -d "$dir/android" ]; then
-              PROJECT_ROOT="$dir"
+            if [ -f "$dir/package.json" ] && [ -d "$dir/client" ] && [ -d "$dir/android" ]; then
+              ROOT="$dir"
               break
             fi
           done < <(find extracted -type d)
 
-          if [ -z "$PROJECT_ROOT" ]; then
-            echo "ERROR: Could not find project root."
-            echo "Expected package.json and android directory."
+          if [ -z "$ROOT" ]; then
+            echo "ERROR: Correct project root not found."
+            echo "Required: package.json + client/ + android/"
             find extracted -maxdepth 5 -print
             exit 1
           fi
 
-          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
 
-          echo "===== PROJECT ROOT ====="
-          echo "$PROJECT_ROOT"
-
-          echo "===== PROJECT STRUCTURE ====="
-          find "$PROJECT_ROOT" -maxdepth 3 -type f | sort
+          echo "================================"
+          echo "PROJECT ROOT:"
+          echo "$ROOT"
+          echo "================================"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-      - name: Install Node dependencies
-        working-directory: ${{ env.PROJECT_ROOT }}
+      - name: Install root dependencies
+        working-directory: ${{ env.ROOT }}
         run: npm install
 
+      - name: Install client dependencies
+        working-directory: ${{ env.ROOT }}/client
+        run: npm install
+
+      - name: Verify Vite
+        working-directory: ${{ env.ROOT }}/client
+        run: |
+          if [ ! -x node_modules/.bin/vite ]; then
+            echo "ERROR: Vite was not installed."
+            exit 1
+          fi
+
+          ./node_modules/.bin/vite --version
+
       - name: Build web application
-        working-directory: ${{ env.PROJECT_ROOT }}
+        working-directory: ${{ env.ROOT }}
         run: npm run build
 
       - name: Setup Java 17
@@ -100,62 +102,49 @@ jobs:
           gradle-version: "9.3.1"
 
       - name: Check Android project
-        working-directory: ${{ env.PROJECT_ROOT }}/android
+        working-directory: ${{ env.ROOT }}/android
         run: |
-          echo "===== ANDROID PROJECT ====="
-          find . -maxdepth 3 -type f | sort
+          test -d app
 
-      - name: Prepare Gradle Wrapper
-        working-directory: ${{ env.PROJECT_ROOT }}/android
-        shell: bash
-        run: |
-          set -e
-
-          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "Gradle wrapper JAR missing."
-            echo "Generating wrapper..."
+          if [ ! -f gradlew ]; then
+            echo "Gradle wrapper missing. Creating it..."
             gradle wrapper --gradle-version 9.3.1
           fi
 
-          chmod +x ./gradlew
+          chmod +x gradlew
 
       - name: Check Gradle
-        working-directory: ${{ env.PROJECT_ROOT }}/android
-        run: |
-          ./gradlew --version
+        working-directory: ${{ env.ROOT }}/android
+        run: ./gradlew --version
 
       - name: Build Debug APK
-        working-directory: ${{ env.PROJECT_ROOT }}/android
+        working-directory: ${{ env.ROOT }}/android
         run: |
           ./gradlew assembleDebug \
             --stacktrace \
             --no-daemon
 
       - name: Verify APK
-        working-directory: ${{ env.PROJECT_ROOT }}/android
         shell: bash
         run: |
-          set -e
-
-          APK=$(find app/build/outputs/apk/debug \
+          APK=$(find "${ROOT}/android/app/build/outputs/apk/debug" \
             -type f \
             -name "*.apk" \
-            | head -n 1)
+            | head -1)
 
           if [ -z "$APK" ]; then
             echo "ERROR: APK was not generated."
             exit 1
           fi
 
-          echo "================================="
+          echo "================================"
           echo "APK BUILD SUCCESSFUL"
-          echo "APK: $APK"
-          echo "================================="
+          echo "$APK"
+          echo "================================"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: JHALRAPATAN-debug-apk
-          path: |
-            extracted/**/android/app/build/outputs/apk/debug/*.apk
+          name: JHALRAPATAN-APK
+          path: ${{ env.ROOT }}/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
