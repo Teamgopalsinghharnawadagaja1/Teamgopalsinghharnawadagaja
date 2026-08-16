@@ -12,24 +12,80 @@ permissions:
 
 jobs:
   build:
-    name: Android Debug APK
+    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+
+      - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Show repository files
+        run: |
+          echo "===== REPOSITORY ====="
+          find . -maxdepth 3 -type f | sort
+
+      - name: Find and extract project ZIP
+        shell: bash
+        run: |
+          set -e
+
+          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: Project ZIP not found."
+            exit 1
+          fi
+
+          echo "Using ZIP: $ZIP_FILE"
+
+          mkdir -p extracted
+          unzip -q "$ZIP_FILE" -d extracted
+
+          echo "===== EXTRACTED FILES ====="
+          find extracted -maxdepth 4 -type f | sort | head -300
+
+      - name: Detect project root
+        shell: bash
+        run: |
+          set -e
+
+          PROJECT_ROOT=""
+
+          # Look for Android project + package.json.
+          while IFS= read -r dir; do
+            if [ -f "$dir/package.json" ] && [ -d "$dir/android" ]; then
+              PROJECT_ROOT="$dir"
+              break
+            fi
+          done < <(find extracted -type d)
+
+          if [ -z "$PROJECT_ROOT" ]; then
+            echo "ERROR: Could not find project root."
+            echo "Expected package.json and android directory."
+            find extracted -maxdepth 5 -print
+            exit 1
+          fi
+
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+
+          echo "===== PROJECT ROOT ====="
+          echo "$PROJECT_ROOT"
+
+          echo "===== PROJECT STRUCTURE ====="
+          find "$PROJECT_ROOT" -maxdepth 3 -type f | sort
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-      - name: Install client dependencies
-        working-directory: client
+      - name: Install Node dependencies
+        working-directory: ${{ env.PROJECT_ROOT }}
         run: npm install
 
-      - name: Build client
-        working-directory: client
+      - name: Build web application
+        working-directory: ${{ env.PROJECT_ROOT }}
         run: npm run build
 
       - name: Setup Java 17
@@ -43,38 +99,63 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
-      - name: Prepare Gradle Wrapper
-        working-directory: android
+      - name: Check Android project
+        working-directory: ${{ env.PROJECT_ROOT }}/android
         run: |
-          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+          echo "===== ANDROID PROJECT ====="
+          find . -maxdepth 3 -type f | sort
+
+      - name: Prepare Gradle Wrapper
+        working-directory: ${{ env.PROJECT_ROOT }}/android
+        shell: bash
+        run: |
+          set -e
+
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "Gradle wrapper JAR missing."
+            echo "Generating wrapper..."
             gradle wrapper --gradle-version 9.3.1
           fi
+
           chmod +x ./gradlew
 
       - name: Check Gradle
-        working-directory: android
-        run: ./gradlew --version
+        working-directory: ${{ env.PROJECT_ROOT }}/android
+        run: |
+          ./gradlew --version
 
-      - name: Build APK
-        working-directory: android
-        run: ./gradlew assembleDebug --stacktrace --no-daemon
+      - name: Build Debug APK
+        working-directory: ${{ env.PROJECT_ROOT }}/android
+        run: |
+          ./gradlew assembleDebug \
+            --stacktrace \
+            --no-daemon
 
       - name: Verify APK
+        working-directory: ${{ env.PROJECT_ROOT }}/android
+        shell: bash
         run: |
-          APK=$(find android/app/build/outputs/apk/debug \
-            -type f -name "*.apk" | head -n 1)
+          set -e
+
+          APK=$(find app/build/outputs/apk/debug \
+            -type f \
+            -name "*.apk" \
+            | head -n 1)
 
           if [ -z "$APK" ]; then
             echo "ERROR: APK was not generated."
             exit 1
           fi
 
-          echo "APK generated successfully:"
-          echo "$APK"
+          echo "================================="
+          echo "APK BUILD SUCCESSFUL"
+          echo "APK: $APK"
+          echo "================================="
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: JHALRAPATAN-debug-apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: |
+            extracted/**/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
