@@ -4,11 +4,11 @@ on:
   push:
     branches:
       - main
-      - develop
+      - master
   pull_request:
     branches:
       - main
-      - develop
+      - master
   workflow_dispatch:
 
 permissions:
@@ -18,33 +18,66 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  NODE_VERSION: "22"
+  GRADLE_VERSION: "9.3.1"
+  ANDROID_PLATFORM: "android-36"
+  ANDROID_BUILD_TOOLS: "36.0.0"
+
 jobs:
   structure:
-    name: Structure Verification
+    name: Structure Check
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify project structure
+      - name: Check actual project structure
         shell: bash
         run: |
           set -euo pipefail
-          test -f package.json
-          test -f server.js
-          test -f client/package.json
-          test -f client/index.html
-          test -f android/settings.gradle.kts
-          test -f android/build.gradle.kts
-          test -f android/app/build.gradle.kts
-          test -f android/app/src/main/AndroidManifest.xml
-          test -d .github/workflows
-          echo "Structure verification PASSED."
+
+          files=(
+            "package.json"
+            "package-lock.json"
+            "server.js"
+            "client/package.json"
+            "client/index.html"
+            "client/vite.config.ts"
+            "android/settings.gradle.kts"
+            "android/build.gradle.kts"
+            "android/app/build.gradle.kts"
+            "android/app/src/main/AndroidManifest.xml"
+          )
+
+          missing=0
+
+          for file in "${files[@]}"; do
+            if [ -f "$file" ]; then
+              echo "OK     $file"
+            else
+              echo "::error::MISSING $file"
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            echo ""
+            echo "Repository structure does not match the uploaded FINAL ZIP."
+            echo "Upload/commit the project files from the FINAL ZIP, not only the workflow."
+            exit 1
+          fi
+
+          echo ""
+          echo "STRUCTURE CHECK PASSED."
 
   web:
     name: Web PWA Build
     runs-on: ubuntu-latest
     needs: structure
+    timeout-minutes: 15
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,33 +85,33 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: client/package.json
 
-      - name: Install Web dependencies
+      - name: Install client dependencies
         working-directory: client
-        run: npm install
+        run: npm install --no-audit --no-fund
 
-      - name: Lint Web
+      - name: TypeScript check
         working-directory: client
-        run: npm run lint --if-present
+        run: npm run lint
 
-      - name: Build Web
+      - name: Build client
         working-directory: client
         run: npm run build
 
-      - name: Verify Web output
+      - name: Verify web output
         shell: bash
         run: |
           set -euo pipefail
           test -f client/dist/index.html
-          echo "Web build verification PASSED."
+          echo "WEB BUILD PASSED: client/dist/index.html exists."
 
-      - name: Upload Web artifact
+      - name: Upload web artifact
         uses: actions/upload-artifact@v4
         with:
-          name: web-pwa-build
+          name: web-pwa
           path: client/dist/**
           if-no-files-found: error
           retention-days: 7
@@ -86,55 +119,87 @@ jobs:
   android:
     name: Android Debug APK
     runs-on: ubuntu-latest
-    needs: structure
+    needs: web
+    timeout-minutes: 30
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup JDK 17
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Install Android SDK 36
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Prepare WebView assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf android/app/src/main/assets/www
+          mkdir -p android/app/src/main/assets/www
+          cp -a client/dist/. android/app/src/main/assets/www/
+          test -f android/app/src/main/assets/www/index.html
+          echo "Web assets copied into Android APK."
 
       - name: Create debug keystore
-        working-directory: android
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f debug.keystore ]; then
-            keytool -genkeypair               -v               -keystore debug.keystore               -storepass android               -alias androiddebugkey               -keypass android               -keyalg RSA               -keysize 2048               -validity 10000               -dname "CN=Android Debug,O=Android,C=US"
-          fi
-
-      - name: Setup Gradle 9.3.1
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: "9.3.1"
-          cache-provider: basic
-
-      - name: Show Gradle version
-        run: gradle --version
+          rm -f android/debug.keystore
+          keytool -genkeypair -v \
+            -keystore android/debug.keystore \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
 
       - name: Build Debug APK
         working-directory: android
-        run: gradle assembleDebug --no-daemon --stacktrace --console=plain
+        run: |
+          gradle assembleDebug \
+            --no-daemon \
+            --stacktrace \
+            --console=plain \
+            -x npmInstallClient \
+            -x npmBuildClient
 
       - name: Verify APK
         shell: bash
         run: |
           set -euo pipefail
           apk="$(find android -type f -path "*/build/outputs/apk/*/*.apk" | head -n 1)"
-          test -n "$apk"
-          echo "APK created: $apk"
+          if [ -z "$apk" ]; then
+            echo "::error::No APK was produced."
+            exit 1
+          fi
+          echo "ANDROID BUILD PASSED: $apk"
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
@@ -151,10 +216,13 @@ jobs:
       - structure
       - web
       - android
+
     steps:
-      - name: Final verification
+      - name: Final result
         run: |
-          echo "Structure: PASSED"
-          echo "Web/PWA: PASSED"
-          echo "Android APK: PASSED"
-          echo "FINAL CI: PASSED"
+          echo "================================"
+          echo "STRUCTURE: PASSED"
+          echo "WEB/PWA:   PASSED"
+          echo "ANDROID:   PASSED"
+          echo "CI:        PASSED"
+          echo "================================"
