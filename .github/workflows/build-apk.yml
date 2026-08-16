@@ -24,6 +24,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Extract ZIP
+        shell: bash
+        run: |
+          set -e
+          ZIP="$(find . -maxdepth 1 -name "*.zip" | head -1)"
+          if [ -z "$ZIP" ]; then
+            echo "No ZIP found — files already extracted"
+          else
+            echo "Extracting $ZIP..."
+            unzip -o "$ZIP"
+            echo "Done."
+          fi
+          echo "android dir:"
+          ls android/ | head -10
+
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
@@ -59,6 +74,7 @@ jobs:
         shell: bash
         run: |
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          cat android/local.properties
 
       - name: Create debug keystore
         shell: bash
@@ -93,16 +109,12 @@ jobs:
           rm -rf android/app/src/main/assets/www
           mkdir -p android/app/src/main/assets/www
           cp -r client/dist/. android/app/src/main/assets/www/
-          ls -la android/app/src/main/assets/www | head -20
 
       - name: Build APK
         working-directory: android
         shell: bash
         run: |
           set -o pipefail
-          echo "========================================"
-          echo "BUILDING TEAM GOPALSINGH APK"
-          echo "========================================"
           gradle :app:assembleDebug \
             --no-daemon \
             --stacktrace \
@@ -120,25 +132,15 @@ jobs:
             echo "::error::APK not found."
             exit 1
           fi
-          echo "APK: $APK"
-          du -h "$APK"
           echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare Final APK
-        if: success()
-        shell: bash
-        run: |
-          mkdir -p final-apk
-          cp "android/${{ steps.apk.outputs.apk_path }}" \
-            "final-apk/Team-GopalSingh-Debug.apk"
-          ls -lh final-apk/Team-GopalSingh-Debug.apk
+          du -h "$APK"
 
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Team-GopalSingh-Debug-APK
-          path: final-apk/Team-GopalSingh-Debug.apk
+          path: android/${{ steps.apk.outputs.apk_path }}
           if-no-files-found: error
           retention-days: 30
 
@@ -159,7 +161,4 @@ jobs:
         run: |
           echo "========================================"
           echo "      BUILD SUCCESSFUL ✅"
-          echo "APK      : Team-GopalSingh-Debug.apk"
-          echo "Artifact : Team-GopalSingh-Debug-APK"
-          echo "Location : Actions → Run → Artifacts"
           echo "========================================"
