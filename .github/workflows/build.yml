@@ -18,16 +18,18 @@ concurrency:
 env:
   NODE_VERSION: "22"
   JAVA_VERSION: "17"
-  GRADLE_VERSION: "9.3.1"
   ANDROID_PLATFORM: "android-36"
   ANDROID_BUILD_TOOLS: "36.0.0"
 
 jobs:
 
-  web:
-    name: Web and Backend Verification
+  # ============================================================
+  # 1. LOCATE APPLICATION
+  # ============================================================
+  prepare:
+    name: Locate Application
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
 
     outputs:
       app_root: ${{ steps.locate.outputs.app_root }}
@@ -36,197 +38,136 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          package-manager-cache: false
-
       - name: Locate application root
         id: locate
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "=============================================="
+          echo " LOCATING APPLICATION"
+          echo "=============================================="
+
           FOUND=""
 
-          while IFS= read -r CLIENT_PACKAGE; do
-            CANDIDATE="$(dirname "$(dirname "$CLIENT_PACKAGE")")"
+          # ------------------------------------------------------
+          # Find the directory containing:
+          # android/app/build.gradle.kts
+          #
+          # Then treat its parent as the application root.
+          # This supports:
+          #
+          # ./package.json
+          # ./japp/package.json
+          # ./some-folder/package.json
+          # ------------------------------------------------------
 
-            if [ -f "$CANDIDATE/server.js" ] &&
-               [ -f "$CANDIDATE/package.json" ] &&
-               [ -d "$CANDIDATE/android" ] &&
-               [ -f "$CANDIDATE/android/app/build.gradle.kts" ]; then
-              FOUND="$CANDIDATE"
+          while IFS= read -r BUILD_FILE; do
+
+            APP_ROOT="$(dirname "$(dirname "$(dirname "$BUILD_FILE")")")"
+
+            if [ -f "$APP_ROOT/package.json" ] &&
+               [ -f "$APP_ROOT/server.js" ] &&
+               [ -f "$APP_ROOT/client/package.json" ]; then
+
+              FOUND="$APP_ROOT"
               break
+
             fi
-          done < <(find . -type f -path "*/client/package.json" -not -path "./.git/*" | sort)
+
+          done < <(
+            find . \
+              -type f \
+              -path "*/android/app/build.gradle.kts" \
+              -not -path "./.git/*" \
+              | sort
+          )
+
+          # ------------------------------------------------------
+          # Fallback: search from server.js
+          # ------------------------------------------------------
 
           if [ -z "$FOUND" ]; then
-            if [ -f package.json ] &&
-               [ -f server.js ] &&
-               [ -d client ] &&
-               [ -d android ] &&
-               [ -f android/app/build.gradle.kts ]; then
-              FOUND="."
-            fi
+
+            while IFS= read -r SERVER_FILE; do
+
+              APP_ROOT="$(dirname "$SERVER_FILE")"
+
+              if [ -f "$APP_ROOT/package.json" ] &&
+                 [ -f "$APP_ROOT/client/package.json" ] &&
+                 [ -f "$APP_ROOT/android/app/build.gradle.kts" ]; then
+
+                FOUND="$APP_ROOT"
+                break
+
+              fi
+
+            done < <(
+              find . \
+                -type f \
+                -name "server.js" \
+                -not -path "./.git/*" \
+                | sort
+            )
+
           fi
 
           if [ -z "$FOUND" ]; then
+
+            echo ""
             echo "ERROR: Could not locate the application."
-            echo "Expected package.json + server.js + client/ + android/app/build.gradle.kts."
-            echo "Repository layout:"
-            find . -maxdepth 4 -type f \
-              \( -name package.json -o -name server.js -o -name build.gradle.kts \) \
-              -print | sort
+            echo ""
+            echo "The workflow expected one directory containing:"
+            echo ""
+            echo "  package.json"
+            echo "  server.js"
+            echo "  client/package.json"
+            echo "  android/app/build.gradle.kts"
+            echo ""
+            echo "Detected relevant files:"
+            echo "----------------------------------------------"
+
+            find . \
+              -maxdepth 7 \
+              -type f \
+              -not -path "./.git/*" \
+              \( \
+                -name "package.json" \
+                -o -name "server.js" \
+                -o -name "index.html" \
+                -o -name "build.gradle.kts" \
+                -o -name "settings.gradle.kts" \
+                -o -name "gradlew" \
+              \) \
+              -print | sort || true
+
+            echo "----------------------------------------------"
             exit 1
           fi
 
           FOUND="${FOUND#./}"
-          [ -n "$FOUND" ] || FOUND="."
 
-          echo "Application root: $FOUND"
+          if [ -z "$FOUND" ]; then
+            FOUND="."
+          fi
+
+          echo ""
+          echo "APPLICATION ROOT FOUND:"
+          echo "$FOUND"
+          echo ""
+
           echo "app_root=$FOUND" >> "$GITHUB_OUTPUT"
 
-      - name: Verify application structure
-        working-directory: ${{ steps.locate.outputs.app_root }}
-        shell: bash
-        run: |
-          set -euo pipefail
 
-          test -f package.json
-          test -f server.js
-          test -f client/package.json
-          test -f client/index.html
-          test -d android
-          test -f android/settings.gradle.kts
-          test -f android/build.gradle.kts
-          test -f android/app/build.gradle.kts
-          test -f android/app/src/main/AndroidManifest.xml
-          test -f android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
-
-          echo "Application structure verified."
-
-      - name: Install backend dependencies
-        working-directory: ${{ steps.locate.outputs.app_root }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund --legacy-peer-deps
-          else
-            npm install --no-audit --no-fund --legacy-peer-deps
-          fi
-
-      - name: Install client dependencies
-        working-directory: ${{ steps.locate.outputs.app_root }}/client
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund --legacy-peer-deps
-          else
-            npm install --no-audit --no-fund --legacy-peer-deps
-          fi
-
-      - name: Check backend syntax
-        working-directory: ${{ steps.locate.outputs.app_root }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          node --check server.js
-
-      - name: Run client lint when available
-        working-directory: ${{ steps.locate.outputs.app_root }}/client
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          LINT="$(node -e 'const p=require("./package.json"); process.stdout.write((p.scripts&&p.scripts.lint)||"")')"
-
-          if [ -z "$LINT" ]; then
-            echo "No lint script; skipping."
-          else
-            npm run lint
-          fi
-
-      - name: Build web client
-        working-directory: ${{ steps.locate.outputs.app_root }}/client
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          BUILD="$(node -e 'const p=require("./package.json"); process.stdout.write((p.scripts&&p.scripts.build)||"")')"
-
-          if [ -z "$BUILD" ]; then
-            echo "ERROR: client/package.json has no build script."
-            exit 1
-          fi
-
-          npm run build
-          test -f dist/index.html
-
-      - name: Verify backend startup and health
-        working-directory: ${{ steps.locate.outputs.app_root }}
-        shell: bash
-        env:
-          PORT: "3000"
-          JWT_SECRET: "ci-test-secret-only"
-        run: |
-          set -euo pipefail
-
-          node server.js > backend.log 2>&1 &
-          SERVER_PID=$!
-
-          cleanup() {
-            kill "$SERVER_PID" 2>/dev/null || true
-            wait "$SERVER_PID" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-
-          READY=false
-
-          for i in $(seq 1 30); do
-            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-              echo "ERROR: Backend stopped before becoming ready."
-              cat backend.log || true
-              exit 1
-            fi
-
-            if curl -fsS http://127.0.0.1:3000/api/health > health.json 2>/dev/null; then
-              READY=true
-              echo "Backend health endpoint passed:"
-              cat health.json
-              break
-            fi
-
-            sleep 1
-          done
-
-          if [ "$READY" != "true" ]; then
-            echo "ERROR: /api/health did not become available on port 3000."
-            echo "Backend log:"
-            cat backend.log || true
-            exit 1
-          fi
-
-      - name: Upload web build
-        uses: actions/upload-artifact@v4
-        with:
-          name: verified-web-dist
-          path: ${{ steps.locate.outputs.app_root }}/client/dist
-          if-no-files-found: error
-          retention-days: 7
-
-
-  android:
-    name: Android Build and Verification
+  # ============================================================
+  # 2. WEB + BACKEND
+  # ============================================================
+  web:
+    name: Web and Backend Verification
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
 
-    needs: web
+    needs: prepare
 
     steps:
       - name: Checkout repository
@@ -238,73 +179,311 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
+      - name: Show application root
+        shell: bash
+        run: |
+          echo "Application root: ${{ needs.prepare.outputs.app_root }}"
+
+      # --------------------------------------------------------
+      # COMPLETE STRUCTURE
+      # --------------------------------------------------------
+
+      - name: Verify complete project structure
+        working-directory: ${{ needs.prepare.outputs.app_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=============================================="
+          echo " PROJECT STRUCTURE CHECK"
+          echo "=============================================="
+
+          test -f package.json
+          test -f server.js
+
+          test -d client
+          test -f client/package.json
+          test -f client/index.html
+
+          test -d android
+          test -f android/settings.gradle.kts
+          test -f android/build.gradle.kts
+          test -f android/app/build.gradle.kts
+
+          test -f android/app/src/main/AndroidManifest.xml
+          test -f android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
+
+          echo ""
+          echo "PROJECT STRUCTURE: PASSED"
+
+
+      # --------------------------------------------------------
+      # BACKEND DEPENDENCIES
+      # --------------------------------------------------------
+
+      - name: Install backend dependencies
+        working-directory: ${{ needs.prepare.outputs.app_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund --legacy-peer-deps
+          else
+            npm install --no-audit --no-fund --legacy-peer-deps
+          fi
+
+          echo "BACKEND DEPENDENCIES: PASSED"
+
+
+      # --------------------------------------------------------
+      # CLIENT DEPENDENCIES
+      # --------------------------------------------------------
+
+      - name: Install client dependencies
+        working-directory: ${{ needs.prepare.outputs.app_root }}/client
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund --legacy-peer-deps
+          else
+            npm install --no-audit --no-fund --legacy-peer-deps
+          fi
+
+          echo "CLIENT DEPENDENCIES: PASSED"
+
+
+      # --------------------------------------------------------
+      # BACKEND SYNTAX
+      # --------------------------------------------------------
+
+      - name: Check backend syntax
+        working-directory: ${{ needs.prepare.outputs.app_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node --check server.js
+
+          echo "BACKEND SYNTAX: PASSED"
+
+
+      # --------------------------------------------------------
+      # CLIENT LINT
+      # --------------------------------------------------------
+
+      - name: Run client lint when available
+        working-directory: ${{ needs.prepare.outputs.app_root }}/client
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LINT_SCRIPT="$(
+            node -e '
+              const p=require("./package.json");
+              process.stdout.write(
+                p.scripts && p.scripts.lint ? "yes" : "no"
+              );
+            '
+          )"
+
+          if [ "$LINT_SCRIPT" = "yes" ]; then
+            npm run lint
+            echo "CLIENT LINT: PASSED"
+          else
+            echo "No lint script found. Lint check skipped."
+          fi
+
+
+      # --------------------------------------------------------
+      # WEB BUILD
+      # --------------------------------------------------------
+
+      - name: Build web client
+        working-directory: ${{ needs.prepare.outputs.app_root }}/client
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_SCRIPT="$(
+            node -e '
+              const p=require("./package.json");
+              process.stdout.write(
+                p.scripts && p.scripts.build ? "yes" : "no"
+              );
+            '
+          )"
+
+          if [ "$BUILD_SCRIPT" != "yes" ]; then
+            echo "ERROR: client/package.json has no build script."
+            exit 1
+          fi
+
+          npm run build
+
+          test -f dist/index.html
+
+          echo "WEB BUILD: PASSED"
+
+
+      # --------------------------------------------------------
+      # BACKEND HEALTH
+      # --------------------------------------------------------
+
+      - name: Verify backend health
+        working-directory: ${{ needs.prepare.outputs.app_root }}
+        env:
+          PORT: "3000"
+          JWT_SECRET: "ci-test-secret-only"
+          NODE_ENV: "test"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Starting backend..."
+
+          node server.js > backend.log 2>&1 &
+          SERVER_PID=$!
+
+          cleanup() {
+            kill "$SERVER_PID" 2>/dev/null || true
+            wait "$SERVER_PID" 2>/dev/null || true
+          }
+
+          trap cleanup EXIT
+
+          READY=false
+
+          for i in $(seq 1 30); do
+
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "ERROR: Backend stopped before becoming ready."
+              echo ""
+              cat backend.log || true
+              exit 1
+            fi
+
+            if curl \
+              --fail \
+              --silent \
+              --show-error \
+              --connect-timeout 2 \
+              --max-time 5 \
+              "http://127.0.0.1:${PORT}/api/health" \
+              > health.json; then
+
+              READY=true
+              break
+            fi
+
+            sleep 1
+
+          done
+
+          if [ "$READY" != "true" ]; then
+            echo "ERROR: /api/health did not become available."
+            echo ""
+            echo "BACKEND LOG:"
+            cat backend.log || true
+            exit 1
+          fi
+
+          echo ""
+          echo "HEALTH RESPONSE:"
+          cat health.json
+          echo ""
+
+          node <<'NODE'
+          const fs = require("fs");
+
+          const raw = fs.readFileSync("health.json", "utf8");
+
+          let data;
+
+          try {
+            data = JSON.parse(raw);
+          } catch (error) {
+            console.error("ERROR: /api/health did not return valid JSON.");
+            process.exit(1);
+          }
+
+          if (data.ok !== true) {
+            console.error("ERROR: /api/health returned ok != true.");
+            console.error(data);
+            process.exit(1);
+          }
+
+          console.log("Health JSON verification passed.");
+          NODE
+
+          echo "BACKEND HEALTH: PASSED"
+
+
+      # --------------------------------------------------------
+      # UPLOAD WEB BUILD
+      # --------------------------------------------------------
+
+      - name: Upload verified web build
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-web-dist
+          path: ${{ needs.prepare.outputs.app_root }}/client/dist
+          if-no-files-found: error
+          retention-days: 7
+
+
+  # ============================================================
+  # 3. ANDROID
+  # ============================================================
+  android:
+    name: Android Build and Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    needs:
+      - prepare
+      - web
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-          cache: gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: ${{ env.GRADLE_VERSION }}
-
-      - name: Locate application root
-        id: locate
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          FOUND=""
-
-          while IFS= read -r CLIENT_PACKAGE; do
-            CANDIDATE="$(dirname "$(dirname "$CLIENT_PACKAGE")")"
-
-            if [ -f "$CANDIDATE/server.js" ] &&
-               [ -f "$CANDIDATE/package.json" ] &&
-               [ -f "$CANDIDATE/android/app/build.gradle.kts" ]; then
-              FOUND="$CANDIDATE"
-              break
-            fi
-          done < <(find . -type f -path "*/client/package.json" -not -path "./.git/*" | sort)
-
-          if [ -z "$FOUND" ]; then
-            if [ -f package.json ] &&
-               [ -f server.js ] &&
-               [ -f android/app/build.gradle.kts ]; then
-              FOUND="."
-            fi
-          fi
-
-          if [ -z "$FOUND" ]; then
-            echo "ERROR: Application root not found."
-            exit 1
-          fi
-
-          FOUND="${FOUND#./}"
-          [ -n "$FOUND" ] || FOUND="."
-
-          echo "Application root: $FOUND"
-          echo "app_root=$FOUND" >> "$GITHUB_OUTPUT"
+      # --------------------------------------------------------
+      # ANDROID SDK
+      # --------------------------------------------------------
 
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
 
-          yes | sdkmanager --licenses >/dev/null || true
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
           sdkmanager \
             "platform-tools" \
             "platforms;${ANDROID_PLATFORM}" \
             "build-tools;${ANDROID_BUILD_TOOLS}"
 
+          echo "ANDROID SDK: PASSED"
+
+
+      # --------------------------------------------------------
+      # VERIFY ANDROID PROJECT
+      # --------------------------------------------------------
+
       - name: Verify Android project
-        working-directory: ${{ steps.locate.outputs.app_root }}
+        working-directory: ${{ needs.prepare.outputs.app_root }}
         shell: bash
         run: |
           set -euo pipefail
@@ -312,41 +491,82 @@ jobs:
           test -f android/settings.gradle.kts
           test -f android/build.gradle.kts
           test -f android/app/build.gradle.kts
+
           test -f android/app/src/main/AndroidManifest.xml
           test -f android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
 
-          echo "Android project verified."
+          echo "ANDROID PROJECT: PASSED"
+
+
+      # --------------------------------------------------------
+      # DOWNLOAD WEB BUILD
+      # --------------------------------------------------------
 
       - name: Download verified web build
         uses: actions/download-artifact@v4
         with:
           name: verified-web-dist
-          path: ${{ needs.web.outputs.app_root }}/client/dist
+          path: ${{ needs.prepare.outputs.app_root }}/client/dist
 
-      - name: Verify web build
-        working-directory: ${{ needs.web.outputs.app_root }}
+
+      - name: Verify downloaded web build
+        working-directory: ${{ needs.prepare.outputs.app_root }}
         shell: bash
         run: |
           set -euo pipefail
+
           test -f client/dist/index.html
 
+          echo "DOWNLOADED WEB BUILD: PASSED"
+
+
+      # --------------------------------------------------------
+      # PREPARE WEBVIEW ASSETS
+      # --------------------------------------------------------
+
       - name: Prepare Android WebView assets
-        working-directory: ${{ needs.web.outputs.app_root }}
+        working-directory: ${{ needs.prepare.outputs.app_root }}
         shell: bash
         run: |
           set -euo pipefail
 
           rm -rf android/app/src/main/assets
+
           mkdir -p android/app/src/main/assets
 
           cp -a client/dist/. android/app/src/main/assets/
 
           test -f android/app/src/main/assets/index.html
 
-          echo "Web assets copied to Android assets."
+          echo "WEBVIEW ASSETS: PASSED"
+
+
+      # --------------------------------------------------------
+      # KOTLIN CHECK
+      # --------------------------------------------------------
+
+      - name: Verify Android Kotlin source
+        working-directory: ${{ needs.prepare.outputs.app_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MAIN="android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt"
+
+          test -f "$MAIN"
+
+          grep -q "WebViewAssetLoader" "$MAIN"
+          grep -q "AssetsPathHandler" "$MAIN"
+
+          echo "KOTLIN WEBVIEW SOURCE: PASSED"
+
+
+      # --------------------------------------------------------
+      # DEBUG KEYSTORE
+      # --------------------------------------------------------
 
       - name: Create debug keystore
-        working-directory: ${{ needs.web.outputs.app_root }}
+        working-directory: ${{ needs.prepare.outputs.app_root }}
         shell: bash
         run: |
           set -euo pipefail
@@ -363,56 +583,98 @@ jobs:
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
 
-      - name: Preflight Android Kotlin source
-        working-directory: ${{ needs.web.outputs.app_root }}
-        shell: bash
-        run: |
-          set -euo pipefail
+          test -f android/debug.keystore
 
-          test -f android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
+          echo "DEBUG KEYSTORE: PASSED"
 
-          echo "Checking MainActivity.kt for required WebView classes..."
-          grep -q "WebViewAssetLoader" android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
-          grep -q "AssetsPathHandler" android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
 
-          echo "Android Kotlin source preflight passed."
+      # --------------------------------------------------------
+      # GRADLE SETUP
+      # --------------------------------------------------------
+
+      - name: Setup Gradle fallback
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+
+      # --------------------------------------------------------
+      # ANDROID BUILD
+      # --------------------------------------------------------
 
       - name: Build Android debug APK
-        working-directory: ${{ needs.web.outputs.app_root }}/android
+        working-directory: ${{ needs.prepare.outputs.app_root }}/android
         shell: bash
         run: |
           set -euo pipefail
 
           if [ -f gradlew ]; then
+
             chmod +x gradlew
+
             ./gradlew clean assembleDebug \
               --no-daemon \
               --stacktrace \
               --console=plain
+
           else
+
             gradle clean assembleDebug \
               --no-daemon \
               --stacktrace \
               --console=plain
+
           fi
 
           test -f app/build/outputs/apk/debug/app-debug.apk
+
+          echo "ANDROID DEBUG APK: PASSED"
+
+
+      # --------------------------------------------------------
+      # APK VERIFY
+      # --------------------------------------------------------
+
+      - name: Verify generated APK
+        working-directory: ${{ needs.prepare.outputs.app_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+
+          test -f "$APK"
+
+          ls -lh "$APK"
+
+          file "$APK"
+
+          echo "APK FILE: PASSED"
+
+
+      # --------------------------------------------------------
+      # UPLOAD APK
+      # --------------------------------------------------------
 
       - name: Upload Android debug APK
         uses: actions/upload-artifact@v4
         with:
           name: Team-GopalSingh-Jhalrapatan-Debug-APK
-          path: ${{ needs.web.outputs.app_root }}/android/app/build/outputs/apk/debug/*.apk
+          path: ${{ needs.prepare.outputs.app_root }}/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
 
 
+  # ============================================================
+  # 4. FINAL POINT-TO-POINT VERIFICATION
+  # ============================================================
   final_verify:
-    name: Final Project Verification
+    name: Final Point-to-Point Verification
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     needs:
+      - prepare
       - web
       - android
 
@@ -420,41 +682,167 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify final project layout
+      # --------------------------------------------------------
+      # DOWNLOAD WEB ARTIFACT
+      # --------------------------------------------------------
+
+      - name: Download verified web build
+        uses: actions/download-artifact@v4
+        with:
+          name: verified-web-dist
+          path: ${{ needs.prepare.outputs.app_root }}/client/dist
+
+
+      # --------------------------------------------------------
+      # DOWNLOAD APK
+      # --------------------------------------------------------
+
+      - name: Download verified Android APK
+        uses: actions/download-artifact@v4
+        with:
+          name: Team-GopalSingh-Jhalrapatan-Debug-APK
+          path: ${{ needs.prepare.outputs.app_root }}/android/app/build/outputs/apk/debug
+
+
+      # --------------------------------------------------------
+      # POINT-TO-POINT CHECK
+      # --------------------------------------------------------
+
+      - name: Final point-to-point verification
+        working-directory: ${{ needs.prepare.outputs.app_root }}
         shell: bash
         run: |
           set -euo pipefail
 
-          FOUND=""
+          echo "=============================================="
+          echo " FINAL POINT-TO-POINT VERIFICATION"
+          echo "=============================================="
 
-          while IFS= read -r CLIENT_PACKAGE; do
-            CANDIDATE="$(dirname "$(dirname "$CLIENT_PACKAGE")")"
+          echo ""
+          echo "[1/8] BACKEND"
 
-            if [ -f "$CANDIDATE/server.js" ] &&
-               [ -f "$CANDIDATE/package.json" ] &&
-               [ -f "$CANDIDATE/android/app/build.gradle.kts" ]; then
-              FOUND="$CANDIDATE"
-              break
-            fi
-          done < <(find . -type f -path "*/client/package.json" -not -path "./.git/*" | sort)
+          test -f package.json
+          test -f server.js
 
-          if [ -z "$FOUND" ]; then
-            echo "ERROR: Final application layout not found."
+          echo "BACKEND: PASSED"
+
+
+          echo ""
+          echo "[2/8] WEB CLIENT"
+
+          test -f client/package.json
+          test -f client/index.html
+
+          echo "WEB CLIENT: PASSED"
+
+
+          echo ""
+          echo "[3/8] WEB BUILD"
+
+          test -f client/dist/index.html
+
+          echo "WEB BUILD: PASSED"
+
+
+          echo ""
+          echo "[4/8] ANDROID PROJECT"
+
+          test -f android/settings.gradle.kts
+          test -f android/build.gradle.kts
+          test -f android/app/build.gradle.kts
+
+          echo "ANDROID PROJECT: PASSED"
+
+
+          echo ""
+          echo "[5/8] ANDROID MANIFEST"
+
+          test -f android/app/src/main/AndroidManifest.xml
+
+          echo "ANDROID MANIFEST: PASSED"
+
+
+          echo ""
+          echo "[6/8] KOTLIN"
+
+          test -f android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
+
+          echo "KOTLIN SOURCE: PASSED"
+
+
+          echo ""
+          echo "[7/8] WEBVIEW"
+
+          test -f android/app/src/main/assets/index.html
+
+          echo "WEBVIEW ASSETS: PASSED"
+
+
+          echo ""
+          echo "[8/8] APK"
+
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+
+          test -f "$APK"
+
+          ls -lh "$APK"
+
+          echo "ANDROID APK: PASSED"
+
+
+          echo ""
+          echo "=============================================="
+          echo " ALL POINT-TO-POINT CHECKS PASSED"
+          echo "=============================================="
+
+
+      # --------------------------------------------------------
+      # BASIC SECRET SCAN
+      # --------------------------------------------------------
+
+      - name: Basic secret scan
+        working-directory: ${{ needs.prepare.outputs.app_root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -RInE \
+            --exclude-dir=.git \
+            --exclude-dir=node_modules \
+            --exclude-dir=dist \
+            --exclude-dir=build \
+            --exclude='*.lock' \
+            '(BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{30,})' \
+            .; then
+
+            echo "ERROR: Potential secret detected."
             exit 1
           fi
 
-          echo "Final application root: $FOUND"
-          echo "FINAL PROJECT VERIFICATION PASSED"
+          echo "SECRET SCAN: PASSED"
+
+
+      # --------------------------------------------------------
+      # FINAL SUCCESS
+      # --------------------------------------------------------
 
       - name: Final pipeline success
         shell: bash
         run: |
           set -euo pipefail
 
+          echo ""
           echo "=============================================="
-          echo "       BUILD / VERIFY PIPELINE PASSED"
+          echo " BUILD / VERIFY PIPELINE PASSED"
           echo "=============================================="
-          echo "Web + Backend : PASSED"
-          echo "Android APK   : PASSED"
-          echo "Project       : VERIFIED"
+          echo "Application Root : ${{ needs.prepare.outputs.app_root }}"
+          echo "Backend          : PASSED"
+          echo "Web Client       : PASSED"
+          echo "Web Build        : PASSED"
+          echo "Android Project  : PASSED"
+          echo "WebView Assets   : PASSED"
+          echo "Android APK      : PASSED"
+          echo "Security Scan    : PASSED"
+          echo "=============================================="
+          echo " FINAL RESULT: VERIFIED"
           echo "=============================================="
