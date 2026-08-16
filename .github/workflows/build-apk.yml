@@ -31,6 +31,7 @@ jobs:
 
           rm -rf extracted
           mkdir -p extracted
+
           unzip -q "$ZIP" -d extracted
 
           echo "ZIP extracted successfully."
@@ -43,7 +44,9 @@ jobs:
           ROOT=""
 
           while IFS= read -r dir; do
-            if [ -f "$dir/package.json" ] && [ -d "$dir/client" ] && [ -d "$dir/android" ]; then
+            if [ -f "$dir/package.json" ] \
+              && [ -d "$dir/client" ] \
+              && [ -d "$dir/android" ]; then
               ROOT="$dir"
               break
             fi
@@ -51,7 +54,12 @@ jobs:
 
           if [ -z "$ROOT" ]; then
             echo "ERROR: Correct project root not found."
-            echo "Required: package.json + client/ + android/"
+            echo "Required structure:"
+            echo "  package.json"
+            echo "  client/"
+            echo "  android/"
+            echo ""
+            echo "Extracted project structure:"
             find extracted -maxdepth 5 -print
             exit 1
           fi
@@ -67,6 +75,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            ${{ env.ROOT }}/package-lock.json
+            ${{ env.ROOT }}/client/package-lock.json
 
       - name: Install root dependencies
         working-directory: ${{ env.ROOT }}
@@ -78,7 +90,10 @@ jobs:
 
       - name: Verify Vite
         working-directory: ${{ env.ROOT }}/client
+        shell: bash
         run: |
+          set -e
+
           if [ ! -x node_modules/.bin/vite ]; then
             echo "ERROR: Vite was not installed."
             exit 1
@@ -96,49 +111,101 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "9.3.1"
-
-      - name: Check Android project
+      - name: Verify Android project
         working-directory: ${{ env.ROOT }}/android
+        shell: bash
         run: |
-          test -d app
+          set -e
 
-          if [ ! -f gradlew ]; then
-            echo "Gradle wrapper missing. Creating it..."
-            gradle wrapper --gradle-version 9.3.1
+          if [ ! -d "app" ]; then
+            echo "ERROR: Android app directory not found."
+            exit 1
+          fi
+
+          if [ ! -f "gradlew" ]; then
+            echo "ERROR: Gradle wrapper (gradlew) is missing."
+            echo "This workflow intentionally requires the project's own Gradle wrapper."
+            echo "Add android/gradlew and android/gradle/wrapper/ to the project."
+            exit 1
+          fi
+
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "ERROR: gradle-wrapper.jar is missing."
+            exit 1
+          fi
+
+          if [ ! -f "gradle/wrapper/gradle-wrapper.properties" ]; then
+            echo "ERROR: gradle-wrapper.properties is missing."
+            exit 1
           fi
 
           chmod +x gradlew
 
-      - name: Check Gradle
+          echo "Android project structure verified."
+          echo ""
+          echo "Gradle wrapper configuration:"
+          cat gradle/wrapper/gradle-wrapper.properties
+
+      - name: Check Gradle Wrapper
         working-directory: ${{ env.ROOT }}/android
-        run: ./gradlew --version
+        shell: bash
+        run: |
+          set -e
+
+          ./gradlew --version \
+            --no-daemon \
+            --no-build-cache
 
       - name: Build Debug APK
         working-directory: ${{ env.ROOT }}/android
+        shell: bash
         run: |
+          set -e
+
+          echo "================================"
+          echo "STARTING ANDROID APK BUILD"
+          echo "USING PROJECT GRADLE WRAPPER"
+          echo "================================"
+
           ./gradlew assembleDebug \
             --stacktrace \
-            --no-daemon
+            --no-daemon \
+            --no-build-cache \
+            --no-configuration-cache
 
       - name: Verify APK
         shell: bash
         run: |
-          APK=$(find "${ROOT}/android/app/build/outputs/apk/debug" \
+          set -e
+
+          APK_DIR="${ROOT}/android/app/build/outputs/apk/debug"
+
+          APK=$(find "$APK_DIR" \
             -type f \
             -name "*.apk" \
             | head -1)
 
           if [ -z "$APK" ]; then
             echo "ERROR: APK was not generated."
+
+            echo ""
+            echo "Expected APK directory:"
+            echo "$APK_DIR"
+
+            echo ""
+            echo "Available build outputs:"
+            find "${ROOT}/android/app/build/outputs" \
+              -maxdepth 5 \
+              -type f \
+              -print 2>/dev/null || true
+
             exit 1
           fi
 
           echo "================================"
           echo "APK BUILD SUCCESSFUL"
+          echo "================================"
+          echo "APK:"
           echo "$APK"
           echo "================================"
 
