@@ -339,7 +339,7 @@ jobs:
 
 
       # =========================================================
-      # 14. COMMIT AND PUSH
+      # 14. COMMIT, SYNC AND PUSH
       # =========================================================
       - name: Commit migrated application
         shell: bash
@@ -353,17 +353,25 @@ jobs:
 
           if git diff --cached --quiet; then
             echo "No changes detected."
-            echo "Migration may already be complete."
             exit 0
           fi
 
           git commit -m "Migrate application project to repository root"
 
-          git push
+          BRANCH="${GITHUB_REF_NAME}"
+
+          echo "Synchronizing with remote branch: $BRANCH"
+
+          git fetch origin "$BRANCH"
+
+          git rebase "origin/$BRANCH"
+
+          git push origin "HEAD:$BRANCH"
 
           echo ""
           echo "======================================"
           echo "MIGRATION COMPLETE"
           echo "======================================"
           echo "Application is now at repository root."
+          echo "Remote branch synchronized successfully."
           echo "======================================"
