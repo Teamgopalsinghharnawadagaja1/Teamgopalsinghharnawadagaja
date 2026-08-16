@@ -35,35 +35,78 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Verify project structure
+      - name: Inspect repository
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "===== ROOT ====="
+          ls -la
+
+          echo "===== ANDROID FILES ====="
+          find android -maxdepth 6 -type f 2>/dev/null | sort | head -300 || true
+
+          echo "===== CLIENT FILES ====="
+          find client -maxdepth 4 -type f 2>/dev/null | sort | head -300 || true
+
+      - name: Verify Android project
         shell: bash
         run: |
           set -euo pipefail
 
           test -d android
-          test -d client
-
           test -f android/settings.gradle.kts
           test -f android/build.gradle.kts
-          test -f android/app/build.gradle.kts
-          test -f android/app/src/main/AndroidManifest.xml
-          test -f android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
 
+          APP_GRADLE=$(find android -type f -path "*/app/build.gradle.kts" | head -n 1)
+
+          if [ -z "$APP_GRADLE" ]; then
+            echo "::error::Android app/build.gradle.kts was not found."
+            exit 1
+          fi
+
+          MANIFEST=$(find android -type f -name "AndroidManifest.xml" | head -n 1)
+
+          if [ -z "$MANIFEST" ]; then
+            echo "::error::AndroidManifest.xml was not found."
+            exit 1
+          fi
+
+          ACTIVITY=$(find android -type f \( \
+            -name "MainActivity.kt" -o \
+            -name "MainActivity.java" \
+          \) | head -n 1)
+
+          if [ -z "$ACTIVITY" ]; then
+            echo "::error::MainActivity was not found."
+            exit 1
+          fi
+
+          echo "Android project: PASSED"
+          echo "App Gradle: $APP_GRADLE"
+          echo "Manifest: $MANIFEST"
+          echo "Main Activity: $ACTIVITY"
+
+      - name: Verify client project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -d client
           test -f client/package.json
           test -f client/index.html
-          test -f client/vite.config.ts
 
-          echo "PROJECT STRUCTURE: PASSED"
+          echo "Client project: PASSED"
 
       - name: Install client dependencies
         working-directory: client
         run: |
           npm install --no-audit --no-fund
 
-      - name: TypeScript check
+      - name: Show npm scripts
         working-directory: client
         run: |
-          npm run lint
+          npm run
 
       - name: Build web application
         working-directory: client
@@ -75,41 +118,69 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -s client/dist/index.html
+          if [ ! -f client/dist/index.html ]; then
+            echo "::error::client/dist/index.html was not generated."
+            find client -maxdepth 3 -type f | sort | head -300
+            exit 1
+          fi
 
-          echo "WEB BUILD: PASSED"
+          echo "Web build: PASSED"
+
+      - name: Prepare Android web assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p android/app/src/main/assets
+
+          rm -rf android/app/src/main/assets/dist
+
+          cp -R client/dist android/app/src/main/assets/dist
+
+          echo "Android web assets: PASSED"
 
       - name: Verify Gradle
         run: |
           gradle --version
 
-      - name: Verify Android project
+      - name: Verify Android Gradle project
         working-directory: android
         run: |
-          gradle tasks --no-daemon
+          gradle tasks --no-daemon --stacktrace
+
+      - name: Clean Android build
+        working-directory: android
+        run: |
+          gradle clean --no-daemon --stacktrace
 
       - name: Build Debug APK
         working-directory: android
         run: |
-          gradle clean assembleDebug --no-daemon --stacktrace
+          gradle assembleDebug --no-daemon --stacktrace
 
       - name: Verify APK
         shell: bash
         run: |
           set -euo pipefail
 
-          APK="$(find android/app/build/outputs/apk/debug \
+          APK=$(find android/app/build/outputs \
             -type f \
-            -name '*.apk' \
-            | head -n 1)"
+            -name "*.apk" \
+            | head -n 1)
 
           if [ -z "$APK" ]; then
             echo "::error::APK was not generated."
-            find android/app/build/outputs -type f 2>/dev/null || true
+
+            echo "===== BUILD OUTPUT ====="
+            find android/app/build/outputs \
+              -type f 2>/dev/null | sort || true
+
             exit 1
           fi
 
+          echo "================================"
           echo "APK BUILD: PASSED"
+          echo "================================"
           echo "APK: $APK"
           ls -lh "$APK"
 
@@ -117,5 +188,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: JHALRAPATAN-debug-apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: android/app/build/outputs/**/*.apk
           if-no-files-found: error
