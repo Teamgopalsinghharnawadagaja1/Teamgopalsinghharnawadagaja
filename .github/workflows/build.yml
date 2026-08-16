@@ -23,22 +23,17 @@ env:
   ANDROID_BUILD_TOOLS: "36.0.0"
 
 jobs:
-
-  # ============================================================
-  # 1. WEB + BACKEND
-  # ============================================================
-
   web:
     name: Web and Backend Verification
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
@@ -53,9 +48,12 @@ jobs:
           test -f client/package.json
           test -f client/index.html
           test -f client/vite.config.ts
+          test -f client/src/main.tsx
           test -f android/settings.gradle.kts
           test -f android/build.gradle.kts
           test -f android/app/build.gradle.kts
+          test -f android/app/src/main/AndroidManifest.xml
+          test -f android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
 
           echo "Project structure OK."
 
@@ -78,9 +76,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           node --check server.js
-
           echo "Backend syntax passed."
 
       - name: TypeScript verification
@@ -88,8 +84,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           npm run lint
+          echo "TypeScript verification passed."
 
       - name: Build web client
         working-directory: client
@@ -98,7 +94,6 @@ jobs:
           set -euo pipefail
 
           npm run build
-
           test -f dist/index.html
 
           echo "Web build passed."
@@ -118,11 +113,13 @@ jobs:
             kill "$SERVER_PID" 2>/dev/null || true
             wait "$SERVER_PID" 2>/dev/null || true
           }
-
           trap cleanup EXIT
+
+          READY=false
 
           for i in $(seq 1 20); do
             if curl -fsS http://127.0.0.1:3000/api/health > health.json; then
+              READY=true
               break
             fi
 
@@ -135,11 +132,15 @@ jobs:
             sleep 1
           done
 
-          test -s health.json
-          grep -q '"ok":true' health.json
+          if [ "$READY" != "true" ]; then
+            echo "Backend health endpoint did not become ready."
+            cat backend.log || true
+            exit 1
+          fi
 
-          echo "Backend health check passed."
+          grep -q '"ok":true' health.json
           cat health.json
+          echo "Backend health check passed."
 
       - name: Upload web build
         uses: actions/upload-artifact@v4
@@ -149,31 +150,18 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-
-  # ============================================================
-  # 2. ANDROID DEBUG APK
-  # ============================================================
-
   android:
     name: Android Build and Verification
     runs-on: ubuntu-latest
-    timeout-minutes: 35
-
-    needs:
-      - web
+    timeout-minutes: 40
+    needs: web
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          package-manager-cache: false
+        uses: actions/checkout@v5
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
@@ -211,8 +199,11 @@ jobs:
           test -f android/app/src/main/AndroidManifest.xml
           test -f android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
 
+          grep -q 'com.android.application' android/build.gradle.kts
+          grep -q 'com.android.application' android/app/build.gradle.kts
+          grep -q 'androidx.webkit:webkit' android/app/build.gradle.kts
+
           echo "Android project structure verified."
-          echo "No gradlew wrapper is required; CI uses Gradle ${GRADLE_VERSION}."
 
       - name: Download verified web build
         uses: actions/download-artifact@v4
@@ -224,9 +215,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           test -f client/dist/index.html
-
           echo "Verified client/dist/index.html."
 
       - name: Prepare Android WebView assets
@@ -234,12 +223,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          rm -rf android/app/src/main/assets/www
-          mkdir -p android/app/src/main/assets/www
+          rm -rf android/app/src/main/assets
+          mkdir -p android/app/src/main/assets
 
-          cp -a client/dist/. android/app/src/main/assets/www/
+          cp -a client/dist/. android/app/src/main/assets/
 
-          test -f android/app/src/main/assets/www/index.html
+          test -f android/app/src/main/assets/index.html
 
           echo "Android WebView assets prepared."
 
@@ -283,9 +272,7 @@ jobs:
             --no-daemon \
             --stacktrace \
             --console=plain \
-            --warning-mode all \
-            -x npmInstallClient \
-            -x npmBuildClient
+            --warning-mode all
 
           test -f app/build/outputs/apk/debug/app-debug.apk
 
@@ -296,12 +283,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          APK_COUNT=$(find android \
-            -type f \
-            -path "*/build/outputs/apk/*.apk" \
-            | wc -l)
-
-          test "$APK_COUNT" -gt 0
+          test -f android/app/build/outputs/apk/debug/app-debug.apk
 
           echo "Generated APK files:"
           find android \
@@ -317,23 +299,17 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-
-  # ============================================================
-  # 3. SECURITY / FINAL VERIFICATION
-  # ============================================================
-
   final_verify:
     name: Final Project Verification
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     needs:
       - web
       - android
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Final project verification
         shell: bash
@@ -342,11 +318,10 @@ jobs:
 
           test -f package.json
           test -f server.js
-
           test -f client/package.json
           test -f client/index.html
           test -f client/vite.config.ts
-
+          test -f client/src/main.tsx
           test -f android/settings.gradle.kts
           test -f android/build.gradle.kts
           test -f android/app/build.gradle.kts
@@ -356,7 +331,6 @@ jobs:
           echo "=============================================="
           echo "FINAL PROJECT STRUCTURE VERIFIED"
           echo "=============================================="
-
           echo "Backend        : OK"
           echo "Web client     : OK"
           echo "Android/Kotlin : OK"
@@ -374,7 +348,6 @@ jobs:
             --exclude='*.lock' \
             '(BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{30,})' \
             .; then
-
             echo "Potential secret detected."
             exit 1
           fi
@@ -390,12 +363,10 @@ jobs:
           echo "=============================================="
           echo "       BUILD / VERIFY PIPELINE PASSED"
           echo "=============================================="
-
           echo "Web + Backend : PASSED"
           echo "Android APK   : PASSED"
           echo "Security scan : PASSED"
           echo "Project       : VERIFIED"
-
           echo ""
           echo "=============================================="
           echo "              PIPELINE PASSED"
