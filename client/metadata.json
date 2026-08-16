@@ -1,0 +1,6 @@
+{
+  "name": "Check",
+  "description": "Comprehensive 100% verified Gram Panchayat, Tehsil, Panchayat Samiti, Village Directory & Ground Deficiency Audit Portal for Jhalawar and Rajasthan.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

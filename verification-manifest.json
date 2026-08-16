@@ -1,0 +1,33 @@
+{
+  "appName": "Team Gopal Singh Harnawada Gaja",
+  "scope": {
+    "assemblyConstituencyNumber": 198,
+    "assemblyConstituency": "Jhalrapatan",
+    "district": "Jhalawar",
+    "state": "Rajasthan"
+  },
+  "verificationDate": "2026-08-16",
+  "policy": "official-source-first",
+  "sources": [
+    {
+      "name": "CEO Rajasthan",
+      "url": "https://election.rajasthan.gov.in/"
+    },
+    {
+      "name": "Local Government Directory",
+      "url": "https://lgdirectory.gov.in/"
+    },
+    {
+      "name": "Jan Soochna Rajasthan",
+      "url": "https://jansoochna.rajasthan.gov.in/"
+    },
+    {
+      "name": "Shala Darpan Rajasthan",
+      "url": "https://rajshaladarpan.rajasthan.gov.in/"
+    },
+    {
+      "name": "District Jhalawar Rajasthan",
+      "url": "https://jhalawar.rajasthan.gov.in/"
+    }
+  ]
+}

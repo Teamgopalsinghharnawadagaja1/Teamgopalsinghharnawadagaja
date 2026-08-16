@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="hi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0f172a" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/logo.png" />
+    <title>टीम गोपालसिंह — झालरापाटन विधानसभा क्षेत्र 198 | झालावाड़ पंचायत डायरेक्टरी</title>
+    <meta name="description" content="विधानसभा क्षेत्र 198 झालरापाटन, हरनावदा गजा, तहसील पिड़ावा, जिला झालावाड़ के लिए ग्राम पंचायत डायरेक्टरी और जनसमस्या पोर्टल।" />
+    <meta property="og:title" content="टीम गोपालसिंह — झालरापाटन" />
+    <meta property="og:description" content="झालावाड़ ग्राम पंचायत डायरेक्टरी व जनसमस्या पोर्टल" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(() => {});
+        });
+      }
+    </script>
+  </body>
+</html>
+
