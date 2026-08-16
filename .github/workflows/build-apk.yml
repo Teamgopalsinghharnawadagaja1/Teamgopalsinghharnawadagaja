@@ -8,210 +8,122 @@ permissions:
 
 jobs:
   build:
-    name: Build Android APK
+    name: Build Jhalrapatan Android APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Find and extract project ZIP
-        shell: bash
-        run: |
-          set -e
-
-          ZIP=$(find . -maxdepth 2 -type f -iname "*.zip" | head -1)
-
-          if [ -z "$ZIP" ]; then
-            echo "ERROR: Project ZIP not found."
-            exit 1
-          fi
-
-          echo "ZIP: $ZIP"
-
-          rm -rf extracted
-          mkdir -p extracted
-
-          unzip -q "$ZIP" -d extracted
-
-          echo "ZIP extracted successfully."
-
-      - name: Detect correct project root
-        shell: bash
-        run: |
-          set -e
-
-          ROOT=""
-
-          while IFS= read -r dir; do
-            if [ -f "$dir/package.json" ] \
-              && [ -d "$dir/client" ] \
-              && [ -d "$dir/android" ]; then
-              ROOT="$dir"
-              break
-            fi
-          done < <(find extracted -type d)
-
-          if [ -z "$ROOT" ]; then
-            echo "ERROR: Correct project root not found."
-            echo "Required structure:"
-            echo "  package.json"
-            echo "  client/"
-            echo "  android/"
-            echo ""
-            echo "Extracted project structure:"
-            find extracted -maxdepth 5 -print
-            exit 1
-          fi
-
-          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
-
-          echo "================================"
-          echo "PROJECT ROOT:"
-          echo "$ROOT"
-          echo "================================"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: |
-            ${{ env.ROOT }}/package-lock.json
-            ${{ env.ROOT }}/client/package-lock.json
-
-      - name: Install root dependencies
-        working-directory: ${{ env.ROOT }}
-        run: npm install
-
-      - name: Install client dependencies
-        working-directory: ${{ env.ROOT }}/client
-        run: npm install
-
-      - name: Verify Vite
-        working-directory: ${{ env.ROOT }}/client
-        shell: bash
-        run: |
-          set -e
-
-          if [ ! -x node_modules/.bin/vite ]; then
-            echo "ERROR: Vite was not installed."
-            exit 1
-          fi
-
-          ./node_modules/.bin/vite --version
-
-      - name: Build web application
-        working-directory: ${{ env.ROOT }}
-        run: npm run build
-
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
       - name: Verify Android project
-        working-directory: ${{ env.ROOT }}/android
         shell: bash
         run: |
           set -e
 
-          if [ ! -d "app" ]; then
-            echo "ERROR: Android app directory not found."
+          if [ ! -d "android" ]; then
+            echo "ERROR: android folder not found"
             exit 1
           fi
+
+          if [ ! -f "android/settings.gradle.kts" ]; then
+            echo "ERROR: android/settings.gradle.kts not found"
+            exit 1
+          fi
+
+          if [ ! -f "android/build.gradle.kts" ]; then
+            echo "ERROR: android/build.gradle.kts not found"
+            exit 1
+          fi
+
+          if [ ! -f "android/app/build.gradle.kts" ]; then
+            echo "ERROR: android/app/build.gradle.kts not found"
+            exit 1
+          fi
+
+          echo "Android project structure OK"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Build web app
+        working-directory: client
+        run: npm run build
+
+      - name: Prepare Android web assets
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p android/app/src/main/assets
+
+          rm -rf android/app/src/main/assets/dist
+
+          cp -R client/dist android/app/src/main/assets/dist
+
+          echo "Web assets copied successfully"
+
+      - name: Prepare Gradle
+        working-directory: android
+        shell: bash
+        run: |
+          set -e
 
           if [ ! -f "gradlew" ]; then
-            echo "ERROR: Gradle wrapper (gradlew) is missing."
-            echo "This workflow intentionally requires the project's own Gradle wrapper."
-            echo "Add android/gradlew and android/gradle/wrapper/ to the project."
-            exit 1
+            echo "Gradle wrapper missing. Generating wrapper..."
+
+            gradle wrapper --gradle-version 9.3.1
+
+            chmod +x gradlew
+          else
+            chmod +x gradlew
           fi
 
-          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "ERROR: gradle-wrapper.jar is missing."
-            exit 1
-          fi
+      - name: Gradle version
+        working-directory: android
+        run: ./gradlew --version
 
-          if [ ! -f "gradle/wrapper/gradle-wrapper.properties" ]; then
-            echo "ERROR: gradle-wrapper.properties is missing."
-            exit 1
-          fi
-
-          chmod +x gradlew
-
-          echo "Android project structure verified."
-          echo ""
-          echo "Gradle wrapper configuration:"
-          cat gradle/wrapper/gradle-wrapper.properties
-
-      - name: Check Gradle Wrapper
-        working-directory: ${{ env.ROOT }}/android
-        shell: bash
-        run: |
-          set -e
-
-          ./gradlew --version \
-            --no-daemon \
-            --no-build-cache
+      - name: Clean
+        working-directory: android
+        run: ./gradlew clean --stacktrace
 
       - name: Build Debug APK
-        working-directory: ${{ env.ROOT }}/android
-        shell: bash
-        run: |
-          set -e
-
-          echo "================================"
-          echo "STARTING ANDROID APK BUILD"
-          echo "USING PROJECT GRADLE WRAPPER"
-          echo "================================"
-
-          ./gradlew assembleDebug \
-            --stacktrace \
-            --no-daemon \
-            --no-build-cache \
-            --no-configuration-cache
+        working-directory: android
+        run: ./gradlew assembleDebug --stacktrace
 
       - name: Verify APK
         shell: bash
         run: |
           set -e
 
-          APK_DIR="${ROOT}/android/app/build/outputs/apk/debug"
-
-          APK=$(find "$APK_DIR" \
-            -type f \
-            -name "*.apk" \
-            | head -1)
+          APK=$(find android/app/build/outputs/apk -type f -name "*.apk" | head -n 1)
 
           if [ -z "$APK" ]; then
-            echo "ERROR: APK was not generated."
-
-            echo ""
-            echo "Expected APK directory:"
-            echo "$APK_DIR"
-
-            echo ""
-            echo "Available build outputs:"
-            find "${ROOT}/android/app/build/outputs" \
-              -maxdepth 5 \
-              -type f \
-              -print 2>/dev/null || true
-
+            echo "ERROR: APK was not generated"
+            find android/app/build/outputs -type f 2>/dev/null || true
             exit 1
           fi
 
-          echo "================================"
-          echo "APK BUILD SUCCESSFUL"
-          echo "================================"
-          echo "APK:"
+          echo "APK generated successfully:"
           echo "$APK"
-          echo "================================"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: JHALRAPATAN-APK
-          path: ${{ env.ROOT }}/android/app/build/outputs/apk/debug/*.apk
+          name: JHALRAPATAN-debug-apk
+          path: android/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
