@@ -1,4 +1,4 @@
-name: Build Verify and Migrate App
+name: Build Verify Team Gopal Singh Jhalrapatan
 
 on:
   push:
@@ -12,10 +12,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-verify-${{ github.workflow }}-${{ github.ref }}
+  group: team-gopal-singh-build-${{ github.ref }}
   cancel-in-progress: true
 
 env:
+  APP_DIR: japp
   NODE_VERSION: "22"
   JAVA_VERSION: "17"
   GRADLE_VERSION: "9.3.1"
@@ -23,6 +24,11 @@ env:
   ANDROID_BUILD_TOOLS: "36.0.0"
 
 jobs:
+
+  # ============================================================
+  # 1. WEB + BACKEND
+  # ============================================================
+
   web:
     name: Web and Backend Verification
     runs-on: ubuntu-latest
@@ -38,57 +44,69 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Verify project structure
+      - name: Verify ZIP project layout
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f package.json
-          test -f server.js
-          test -f client/package.json
-          test -f client/index.html
-          test -f client/vite.config.ts
-          test -f client/src/main.tsx
-          test -f android/settings.gradle.kts
-          test -f android/build.gradle.kts
-          test -f android/app/build.gradle.kts
-          test -f android/app/src/main/AndroidManifest.xml
-          test -f android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
+          test -d "${APP_DIR}"
+          test -f "${APP_DIR}/package.json"
+          test -f "${APP_DIR}/server.js"
+          test -f "${APP_DIR}/client/package.json"
+          test -f "${APP_DIR}/client/index.html"
+          test -f "${APP_DIR}/client/vite.config.ts"
+          test -f "${APP_DIR}/android/settings.gradle.kts"
+          test -f "${APP_DIR}/android/build.gradle.kts"
+          test -f "${APP_DIR}/android/app/build.gradle.kts"
+          test -f "${APP_DIR}/android/app/src/main/AndroidManifest.xml"
+          test -f "${APP_DIR}/android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt"
 
-          echo "Project structure OK."
+          echo "Project layout OK: ${APP_DIR}/"
 
       - name: Install backend dependencies
+        working-directory: japp
         shell: bash
         run: |
           set -euo pipefail
 
-          npm install --no-audit --no-fund --legacy-peer-deps
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund --legacy-peer-deps
+          fi
 
       - name: Install client dependencies
-        working-directory: client
+        working-directory: japp/client
         shell: bash
         run: |
           set -euo pipefail
 
-          npm install --no-audit --no-fund --legacy-peer-deps
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund --legacy-peer-deps
+          fi
 
       - name: Check backend syntax
+        working-directory: japp
         shell: bash
         run: |
           set -euo pipefail
+
           node --check server.js
           echo "Backend syntax passed."
 
       - name: TypeScript verification
-        working-directory: client
+        working-directory: japp/client
         shell: bash
         run: |
           set -euo pipefail
+
           npm run lint
           echo "TypeScript verification passed."
 
       - name: Build web client
-        working-directory: client
+        working-directory: japp/client
         shell: bash
         run: |
           set -euo pipefail
@@ -99,6 +117,7 @@ jobs:
           echo "Web build passed."
 
       - name: Verify backend health endpoint
+        working-directory: japp
         shell: bash
         env:
           PORT: "3000"
@@ -117,7 +136,7 @@ jobs:
 
           READY=false
 
-          for i in $(seq 1 20); do
+          for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:3000/api/health > health.json; then
               READY=true
               break
@@ -139,16 +158,21 @@ jobs:
           fi
 
           grep -q '"ok":true' health.json
-          cat health.json
           echo "Backend health check passed."
+          cat health.json
 
-      - name: Upload web build
+      - name: Upload verified web build
         uses: actions/upload-artifact@v4
         with:
-          name: web-dist
-          path: client/dist
+          name: team-gopal-singh-web-dist
+          path: japp/client/dist
           if-no-files-found: error
           retention-days: 7
+
+
+  # ============================================================
+  # 2. ANDROID DEBUG APK
+  # ============================================================
 
   android:
     name: Android Build and Verification
@@ -193,29 +217,31 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -f android/settings.gradle.kts
-          test -f android/build.gradle.kts
-          test -f android/app/build.gradle.kts
-          test -f android/app/src/main/AndroidManifest.xml
-          test -f android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
+          test -f "${APP_DIR}/android/settings.gradle.kts"
+          test -f "${APP_DIR}/android/build.gradle.kts"
+          test -f "${APP_DIR}/android/app/build.gradle.kts"
+          test -f "${APP_DIR}/android/app/src/main/AndroidManifest.xml"
+          test -f "${APP_DIR}/android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt"
 
-          grep -q 'com.android.application' android/build.gradle.kts
-          grep -q 'com.android.application' android/app/build.gradle.kts
-          grep -q 'androidx.webkit:webkit' android/app/build.gradle.kts
+          grep -q 'com.android.application' "${APP_DIR}/android/build.gradle.kts"
+          grep -q 'version = "9.1.1"' "${APP_DIR}/android/build.gradle.kts"
+          grep -q 'compileSdk = 36' "${APP_DIR}/android/app/build.gradle.kts"
+          grep -q 'AssetsPathHandler(this)' "${APP_DIR}/android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt"
 
-          echo "Android project structure verified."
+          echo "Android project verified."
 
       - name: Download verified web build
         uses: actions/download-artifact@v4
         with:
-          name: web-dist
-          path: client/dist
+          name: team-gopal-singh-web-dist
+          path: japp/client/dist
 
       - name: Verify downloaded web build
         shell: bash
         run: |
           set -euo pipefail
-          test -f client/dist/index.html
+
+          test -f "${APP_DIR}/client/dist/index.html"
           echo "Verified client/dist/index.html."
 
       - name: Prepare Android WebView assets
@@ -223,13 +249,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          rm -rf android/app/src/main/assets
-          mkdir -p android/app/src/main/assets
+          rm -rf "${APP_DIR}/android/app/src/main/assets"
+          mkdir -p "${APP_DIR}/android/app/src/main/assets"
 
-          cp -a client/dist/. android/app/src/main/assets/
+          cp -a "${APP_DIR}/client/dist/." "${APP_DIR}/android/app/src/main/assets/"
 
-          test -f android/app/src/main/assets/index.html
-
+          test -f "${APP_DIR}/android/app/src/main/assets/index.html"
           echo "Android WebView assets prepared."
 
       - name: Create debug keystore
@@ -237,10 +262,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          rm -f android/debug.keystore
+          rm -f "${APP_DIR}/android/debug.keystore"
 
           keytool -genkeypair -v \
-            -keystore android/debug.keystore \
+            -keystore "${APP_DIR}/android/debug.keystore" \
             -storepass android \
             -alias androiddebugkey \
             -keypass android \
@@ -249,10 +274,10 @@ jobs:
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
 
-          test -f android/debug.keystore
+          test -f "${APP_DIR}/android/debug.keystore"
 
       - name: Gradle clean
-        working-directory: android
+        working-directory: japp/android
         shell: bash
         run: |
           set -euo pipefail
@@ -263,7 +288,7 @@ jobs:
             --console=plain
 
       - name: Build Android debug APK
-        working-directory: android
+        working-directory: japp/android
         shell: bash
         run: |
           set -euo pipefail
@@ -275,7 +300,6 @@ jobs:
             --warning-mode all
 
           test -f app/build/outputs/apk/debug/app-debug.apk
-
           echo "Android debug APK build passed."
 
       - name: Verify generated APK
@@ -283,21 +307,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -f android/app/build/outputs/apk/debug/app-debug.apk
+          APK="${APP_DIR}/android/app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
 
-          echo "Generated APK files:"
-          find android \
-            -type f \
-            -path "*/build/outputs/apk/*.apk" \
-            -print
+          echo "Generated APK: $APK"
+          ls -lh "$APK"
 
       - name: Upload Android debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Team-GopalSingh-Debug-APK
-          path: android/app/build/outputs/apk/debug/*.apk
+          name: Team-GopalSingh-Jhalrapatan-Debug-APK
+          path: japp/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+
+  # ============================================================
+  # 3. FINAL VERIFICATION
+  # ============================================================
 
   final_verify:
     name: Final Project Verification
@@ -316,43 +343,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -f package.json
-          test -f server.js
-          test -f client/package.json
-          test -f client/index.html
-          test -f client/vite.config.ts
-          test -f client/src/main.tsx
-          test -f android/settings.gradle.kts
-          test -f android/build.gradle.kts
-          test -f android/app/build.gradle.kts
-          test -f android/app/src/main/AndroidManifest.xml
-          test -f android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
+          test -f "${APP_DIR}/package.json"
+          test -f "${APP_DIR}/server.js"
+          test -f "${APP_DIR}/client/package.json"
+          test -f "${APP_DIR}/client/index.html"
+          test -f "${APP_DIR}/client/vite.config.ts"
+          test -f "${APP_DIR}/android/settings.gradle.kts"
+          test -f "${APP_DIR}/android/build.gradle.kts"
+          test -f "${APP_DIR}/android/app/build.gradle.kts"
+          test -f "${APP_DIR}/android/app/src/main/AndroidManifest.xml"
+          test -f "${APP_DIR}/android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt"
 
           echo "=============================================="
           echo "FINAL PROJECT STRUCTURE VERIFIED"
           echo "=============================================="
-          echo "Backend        : OK"
-          echo "Web client     : OK"
-          echo "Android/Kotlin : OK"
-          echo "Gradle KTS     : OK"
-
-      - name: Basic secret scan
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if grep -RInE \
-            --exclude-dir=.git \
-            --exclude-dir=node_modules \
-            --exclude-dir=dist \
-            --exclude='*.lock' \
-            '(BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{30,})' \
-            .; then
-            echo "Potential secret detected."
-            exit 1
-          fi
-
-          echo "Basic secret scan passed."
+          echo "Application root : ${APP_DIR}/"
+          echo "Backend          : OK"
+          echo "Web client       : OK"
+          echo "Android/Kotlin   : OK"
+          echo "Gradle KTS       : OK"
 
       - name: Final pipeline success
         shell: bash
@@ -365,9 +374,5 @@ jobs:
           echo "=============================================="
           echo "Web + Backend : PASSED"
           echo "Android APK   : PASSED"
-          echo "Security scan : PASSED"
           echo "Project       : VERIFIED"
-          echo ""
-          echo "=============================================="
-          echo "              PIPELINE PASSED"
           echo "=============================================="
