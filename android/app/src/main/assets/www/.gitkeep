@@ -1,3 +1,0 @@
-This folder is populated automatically at build time from ../../../../client/dist
-by the "copyWebAssets" Gradle task defined in app/build.gradle.kts. Do not edit
-files here directly - they will be overwritten on every build.
