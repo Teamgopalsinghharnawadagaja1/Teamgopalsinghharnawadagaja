@@ -5,13 +5,11 @@ on:
     branches:
       - main
       - master
-
   pull_request:
-
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: build-verify-${{ github.workflow }}-${{ github.ref }}
@@ -20,614 +18,162 @@ concurrency:
 env:
   NODE_VERSION: "22"
   JAVA_VERSION: "17"
-  ANDROID_API: "36"
+  GRADLE_VERSION: "9.3.1"
+  ANDROID_PLATFORM: "android-36"
   ANDROID_BUILD_TOOLS: "36.0.0"
 
 jobs:
 
   # ============================================================
-  # 1. PREPARE / MIGRATE / AUTO-REPAIR
-  # ============================================================
-
-  prepare:
-    name: Prepare, Migrate and Auto-Repair
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-
-    outputs:
-      source_sha: ${{ steps.final_sha.outputs.source_sha }}
-      migrated: ${{ steps.result.outputs.migrated }}
-      repaired: ${{ steps.result.outputs.repaired }}
-
-    steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          persist-credentials: true
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          package-manager-cache: false
-
-      - name: Show repository information
-        shell: bash
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "REPOSITORY INFORMATION"
-          echo "======================================"
-          echo "Repository : $GITHUB_REPOSITORY"
-          echo "Event      : $GITHUB_EVENT_NAME"
-          echo "Branch     : ${GITHUB_REF_NAME:-unknown}"
-          echo "SHA        : $GITHUB_SHA"
-          echo "======================================"
-
-          git status --short || true
-
-      - name: Detect existing project
-        shell: bash
-        run: |
-          set -e
-
-          if [ \
-            -f "package.json" ] &&
-            [ -f "server.js" ] &&
-            [ -f "client/package.json" ] &&
-            [ -d "client" ] &&
-            [ -d "android" ]
-          then
-            echo "PROJECT_EXISTS=true" >> "$GITHUB_ENV"
-
-            echo "======================================"
-            echo "PROJECT ALREADY EXISTS"
-            echo "======================================"
-          else
-            echo "PROJECT_EXISTS=false" >> "$GITHUB_ENV"
-
-            echo "======================================"
-            echo "PROJECT ROOT INCOMPLETE"
-            echo "ZIP MIGRATION MAY BE REQUIRED"
-            echo "======================================"
-          fi
-
-      - name: Find and migrate application ZIP
-        if: env.PROJECT_EXISTS == 'false'
-        shell: bash
-        run: |
-          set -e
-
-          mapfile -t ZIPS < <(
-            find . \
-              -type f \
-              -iname "*.zip" \
-              -not -path "./.git/*" \
-              -not -path "./migration-temp/*" \
-              | sort
-          )
-
-          if [ "${#ZIPS[@]}" -eq 0 ]; then
-            echo "ERROR: No application ZIP found."
-            exit 1
-          fi
-
-          if [ "${#ZIPS[@]}" -gt 1 ]; then
-            echo "ERROR: Multiple ZIP files found:"
-            printf '%s\n' "${ZIPS[@]}"
-            exit 1
-          fi
-
-          ZIP_FILE="${ZIPS[0]}"
-
-          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
-
-          rm -rf migration-temp
-          mkdir -p migration-temp
-
-          unzip -q "$ZIP_FILE" -d migration-temp
-
-          echo "ZIP extraction successful."
-
-      - name: Locate application inside ZIP
-        if: env.PROJECT_EXISTS == 'false'
-        shell: bash
-        run: |
-          set -e
-
-          mapfile -t PROJECTS < <(
-            find migration-temp \
-              -type f \
-              -name "package.json" \
-              -print0 |
-            xargs -0 -r -n1 dirname |
-            while read -r DIR
-            do
-              if [ \
-                -f "$DIR/server.js" ] &&
-                [ -f "$DIR/client/package.json" ] &&
-                [ -d "$DIR/client" ] &&
-                [ -d "$DIR/android" ]
-              then
-                echo "$DIR"
-              fi
-            done |
-            sort -u
-          )
-
-          if [ "${#PROJECTS[@]}" -eq 0 ]; then
-            echo "ERROR: Complete application was not found inside ZIP."
-            exit 1
-          fi
-
-          if [ "${#PROJECTS[@]}" -gt 1 ]; then
-            echo "ERROR: Multiple application projects found:"
-            printf '%s\n' "${PROJECTS[@]}"
-            exit 1
-          fi
-
-          APP_DIR="${PROJECTS[0]}"
-
-          rsync -a \
-            --exclude=".git/" \
-            --exclude=".github/" \
-            "$APP_DIR/" \
-            ./
-
-          echo "Application migrated to repository root."
-
-      - name: Verify project structure
-        shell: bash
-        run: |
-          set -e
-
-          test -f package.json
-          test -f server.js
-          test -f client/package.json
-          test -d client
-          test -d android
-
-          echo "PROJECT STRUCTURE VERIFIED"
-
-      - name: Safe dependency and formatting auto-repair
-        shell: bash
-        run: |
-          set +e
-
-          REPAIRED=false
-
-          echo "Starting safe auto-repair..."
-
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-
-            if [ $? -ne 0 ]; then
-              rm -rf node_modules
-              npm cache clean --force || true
-
-              npm install \
-                --no-audit \
-                --no-fund \
-                --legacy-peer-deps
-
-              [ $? -eq 0 ] && REPAIRED=true
-            fi
-          else
-            npm install \
-              --no-audit \
-              --no-fund \
-              --legacy-peer-deps
-
-            [ $? -eq 0 ] && REPAIRED=true
-          fi
-
-          if [ -f client/package-lock.json ]; then
-            (
-              cd client
-              npm ci --no-audit --no-fund
-            )
-
-            if [ $? -ne 0 ]; then
-              rm -rf client/node_modules
-              npm cache clean --force || true
-
-              (
-                cd client
-                npm install \
-                  --no-audit \
-                  --no-fund \
-                  --legacy-peer-deps
-              )
-
-              [ $? -eq 0 ] && REPAIRED=true
-            fi
-          else
-            (
-              cd client
-              npm install \
-                --no-audit \
-                --no-fund \
-                --legacy-peer-deps
-            )
-
-            [ $? -eq 0 ] && REPAIRED=true
-          fi
-
-          if [ -f client/package.json ]; then
-
-            LINT_SCRIPT=$(node -e "
-              const p=require('./client/package.json');
-              console.log((p.scripts && p.scripts.lint) || '');
-            " 2>/dev/null)
-
-            if echo "$LINT_SCRIPT" | grep -qi "eslint"; then
-              (
-                cd client
-                npm run lint -- --fix
-              )
-
-              [ $? -eq 0 ] && REPAIRED=true
-            fi
-          fi
-
-          rm -rf client/dist
-
-          echo "repaired=$REPAIRED" >> "$GITHUB_ENV"
-
-          echo "Auto-repair finished: $REPAIRED"
-
-      - name: Remove migration files
-        if: env.PROJECT_EXISTS == 'false'
-        shell: bash
-        run: |
-          set -e
-
-          if [ -n "${ZIP_FILE:-}" ]; then
-            rm -f "$ZIP_FILE"
-          fi
-
-          rm -rf migration-temp
-
-      - name: Commit and push migration or repair
-        shell: bash
-        run: |
-          set -e
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add -A
-
-          if git diff --cached --quiet; then
-            echo "No migration or repair changes."
-            echo "CURRENT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
-          git commit -m "Migrate and auto-repair application"
-
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            echo "Pull request detected. Automatic push disabled."
-            echo "CURRENT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
-          BRANCH="${GITHUB_REF_NAME}"
-
-          if [ "$BRANCH" != "main" ] && [ "$BRANCH" != "master" ]; then
-            echo "Automatic push disabled for branch: $BRANCH"
-            echo "CURRENT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
-          PUSH_OK=false
-
-          for ATTEMPT in 1 2 3
-          do
-            echo "PUSH ATTEMPT $ATTEMPT/3"
-
-            git fetch origin "$BRANCH"
-
-            if ! git rebase "origin/$BRANCH"; then
-              git rebase --abort || true
-
-              if [ "$ATTEMPT" -eq 3 ]; then
-                exit 1
-              fi
-
-              sleep 3
-              continue
-            fi
-
-            if git push origin "HEAD:$BRANCH"; then
-              PUSH_OK=true
-              break
-            fi
-
-            sleep 3
-          done
-
-          if [ "$PUSH_OK" != "true" ]; then
-            echo "ERROR: Push failed after 3 attempts."
-            exit 1
-          fi
-
-          git fetch origin "$BRANCH"
-
-          FINAL_SHA=$(git rev-parse "origin/$BRANCH")
-
-          echo "CURRENT_SHA=$FINAL_SHA" >> "$GITHUB_ENV"
-
-          echo "Final SHA: $FINAL_SHA"
-
-      - name: Set final source SHA
-        id: final_sha
-        shell: bash
-        run: |
-          set -e
-
-          SHA="${CURRENT_SHA:-$(git rev-parse HEAD)}"
-
-          echo "source_sha=$SHA" >> "$GITHUB_OUTPUT"
-
-          echo "Prepared source SHA: $SHA"
-
-      - name: Set prepare result
-        id: result
-        shell: bash
-        run: |
-          if [ "${PROJECT_EXISTS:-false}" = "false" ]; then
-            echo "migrated=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "migrated=false" >> "$GITHUB_OUTPUT"
-          fi
-
-          if [ "${repaired:-false}" = "true" ]; then
-            echo "repaired=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "repaired=false" >> "$GITHUB_OUTPUT"
-          fi
-
-
-  # ============================================================
-  # 2. WEB + BACKEND
+  # 1. WEB + BACKEND
   # ============================================================
 
   web:
     name: Web and Backend Verification
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-
-    needs:
-      - prepare
+    timeout-minutes: 25
 
     steps:
-
-      - name: Checkout prepared source
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.prepare.outputs.source_sha }}
-          fetch-depth: 0
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
-      - name: Verify project files
+      - name: Verify project structure
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           test -f package.json
           test -f server.js
           test -f client/package.json
-          test -d client
-          test -d android
+          test -f client/index.html
+          test -f client/vite.config.ts
+          test -f android/settings.gradle.kts
+          test -f android/build.gradle.kts
+          test -f android/app/build.gradle.kts
 
-          echo "Project structure verified."
+          echo "Project structure OK."
 
       - name: Install backend dependencies
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          if [ -f package-lock.json ]; then
-            if ! npm ci --no-audit --no-fund; then
-              rm -rf node_modules
-              npm install \
-                --no-audit \
-                --no-fund \
-                --legacy-peer-deps
-            fi
-          else
-            npm install \
-              --no-audit \
-              --no-fund \
-              --legacy-peer-deps
-          fi
+          npm install --no-audit --no-fund --legacy-peer-deps
 
       - name: Install client dependencies
+        working-directory: client
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          if [ -f client/package-lock.json ]; then
-            if ! (
-              cd client
-              npm ci --no-audit --no-fund
-            ); then
-
-              rm -rf client/node_modules
-
-              (
-                cd client
-                npm install \
-                  --no-audit \
-                  --no-fund \
-                  --legacy-peer-deps
-              )
-            fi
-          else
-            (
-              cd client
-              npm install \
-                --no-audit \
-                --no-fund \
-                --legacy-peer-deps
-            )
-          fi
+          npm install --no-audit --no-fund --legacy-peer-deps
 
       - name: Check backend syntax
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           node --check server.js
 
           echo "Backend syntax passed."
 
-      - name: Run client lint with auto-repair
+      - name: TypeScript verification
+        working-directory: client
         shell: bash
         run: |
-          set +e
-
-          cd client
-
-          LINT_SCRIPT=$(node -e "
-            const p=require('./package.json');
-            console.log((p.scripts && p.scripts.lint) || '');
-          " 2>/dev/null)
-
-          if [ -z "$LINT_SCRIPT" ]; then
-            echo "No lint script found."
-            exit 0
-          fi
+          set -euo pipefail
 
           npm run lint
 
-          LINT_STATUS=$?
-
-          if [ "$LINT_STATUS" -ne 0 ]; then
-            echo "Lint failed. Trying auto-fix..."
-
-            npm run lint -- --fix
-
-            FIX_STATUS=$?
-
-            if [ "$FIX_STATUS" -ne 0 ]; then
-              echo "ERROR: Client lint failed after auto-fix."
-              exit "$FIX_STATUS"
-            fi
-          fi
-
-          echo "Client lint passed."
-
       - name: Build web client
+        working-directory: client
         shell: bash
         run: |
-          set -e
-
-          cd client
-
-          BUILD_SCRIPT=$(node -e "
-            const p=require('./package.json');
-            console.log((p.scripts && p.scripts.build) || '');
-          " 2>/dev/null)
-
-          if [ -z "$BUILD_SCRIPT" ]; then
-            echo "ERROR: No client build script found."
-            exit 1
-          fi
+          set -euo pipefail
 
           npm run build
 
-          echo "Client build passed."
+          test -f dist/index.html
 
-      - name: Verify backend startup
+          echo "Web build passed."
+
+      - name: Verify backend health endpoint
         shell: bash
+        env:
+          PORT: "3000"
+          JWT_SECRET: "ci-test-secret-only"
         run: |
-          set -e
+          set -euo pipefail
 
           node server.js > backend.log 2>&1 &
           SERVER_PID=$!
 
           cleanup() {
             kill "$SERVER_PID" 2>/dev/null || true
+            wait "$SERVER_PID" 2>/dev/null || true
           }
 
           trap cleanup EXIT
 
-          READY=false
-
-          for i in $(seq 1 20)
-          do
-            sleep 1
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:3000/api/health > health.json; then
+              break
+            fi
 
             if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-              echo "ERROR: Backend process stopped."
+              echo "Backend stopped unexpectedly."
               cat backend.log || true
               exit 1
             fi
 
-            if grep -Eqi \
-              "listening|server started|running on|localhost|127\.0\.0\.1" \
-              backend.log 2>/dev/null
-            then
-              READY=true
-              break
-            fi
+            sleep 1
           done
 
-          if [ "$READY" != "true" ]; then
-            echo "Backend startup message was not detected."
-            cat backend.log || true
-          fi
+          test -s health.json
+          grep -q '"ok":true' health.json
 
-          echo "Backend startup check passed."
+          echo "Backend health check passed."
+          cat health.json
 
-      - name: Final web verification
-        shell: bash
-        run: |
-          set -e
-
-          test -f package.json
-          test -f server.js
-          test -f client/package.json
-          test -d client
-          test -d android
-
-          echo "======================================"
-          echo "WEB + BACKEND VERIFICATION PASSED"
-          echo "======================================"
+      - name: Upload web build
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: client/dist
+          if-no-files-found: error
+          retention-days: 7
 
 
   # ============================================================
-  # 3. ANDROID BUILD / VERIFICATION
+  # 2. ANDROID DEBUG APK
   # ============================================================
 
   android:
     name: Android Build and Verification
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 35
 
     needs:
-      - prepare
+      - web
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Checkout prepared source
-        uses: actions/checkout@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          ref: ${{ needs.prepare.outputs.source_sha }}
-          fetch-depth: 0
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
@@ -636,167 +182,221 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Verify Android project
-        shell: bash
-        run: |
-          set -e
-
-          test -d android
-          test -f android/gradlew
-
-          chmod +x android/gradlew
-
-          echo "Android project verified."
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+          cache-read-only: false
 
       - name: Install Android SDK packages
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          sdkmanager --licenses > /dev/null || true
+          yes | sdkmanager --licenses >/dev/null || true
 
           sdkmanager \
             "platform-tools" \
-            "platforms;android-${ANDROID_API}" \
+            "platforms;${ANDROID_PLATFORM}" \
             "build-tools;${ANDROID_BUILD_TOOLS}"
 
-      - name: Android clean
+      - name: Verify Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f android/settings.gradle.kts
+          test -f android/build.gradle.kts
+          test -f android/app/build.gradle.kts
+          test -f android/app/src/main/AndroidManifest.xml
+          test -f android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
+
+          echo "Android project structure verified."
+          echo "No gradlew wrapper is required; CI uses Gradle ${GRADLE_VERSION}."
+
+      - name: Download verified web build
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: client/dist
+
+      - name: Verify downloaded web build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f client/dist/index.html
+
+          echo "Verified client/dist/index.html."
+
+      - name: Prepare Android WebView assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf android/app/src/main/assets/www
+          mkdir -p android/app/src/main/assets/www
+
+          cp -a client/dist/. android/app/src/main/assets/www/
+
+          test -f android/app/src/main/assets/www/index.html
+
+          echo "Android WebView assets prepared."
+
+      - name: Create debug keystore
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -f android/debug.keystore
+
+          keytool -genkeypair -v \
+            -keystore android/debug.keystore \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+          test -f android/debug.keystore
+
+      - name: Gradle clean
         working-directory: android
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          ./gradlew clean \
+          gradle clean \
             --no-daemon \
-            --stacktrace
+            --stacktrace \
+            --console=plain
 
       - name: Build Android debug APK
         working-directory: android
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          ./gradlew assembleDebug \
+          gradle assembleDebug \
             --no-daemon \
-            --stacktrace
+            --stacktrace \
+            --console=plain \
+            --warning-mode all \
+            -x npmInstallClient \
+            -x npmBuildClient
 
-          echo "ANDROID DEBUG BUILD PASSED"
+          test -f app/build/outputs/apk/debug/app-debug.apk
+
+          echo "Android debug APK build passed."
 
       - name: Verify generated APK
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           APK_COUNT=$(find android \
             -type f \
-            -name "*.apk" \
+            -path "*/build/outputs/apk/*.apk" \
             | wc -l)
 
-          if [ "$APK_COUNT" -eq 0 ]; then
-            echo "ERROR: No APK generated."
-            exit 1
-          fi
+          test "$APK_COUNT" -gt 0
 
           echo "Generated APK files:"
-
           find android \
             -type f \
-            -name "*.apk" \
+            -path "*/build/outputs/apk/*.apk" \
             -print
 
       - name: Upload Android debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: android-debug-apk
-          path: |
-            android/**/build/outputs/apk/**/*.apk
+          name: Team-GopalSingh-Debug-APK
+          path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
-          retention-days: 7
-
-      - name: Final Android verification
-        shell: bash
-        run: |
-          set -e
-
-          APK_COUNT=$(find android \
-            -type f \
-            -name "*.apk" \
-            | wc -l)
-
-          test "$APK_COUNT" -gt 0
-
-          echo "======================================"
-          echo "ANDROID VERIFICATION PASSED"
-          echo "======================================"
+          retention-days: 14
 
 
   # ============================================================
-  # 4. FINAL VERIFICATION
+  # 3. SECURITY / FINAL VERIFICATION
   # ============================================================
 
   final_verify:
     name: Final Project Verification
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     needs:
-      - prepare
       - web
       - android
 
     steps:
-
-      - name: Checkout final prepared source
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.prepare.outputs.source_sha }}
-          fetch-depth: 0
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Final project verification
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           test -f package.json
           test -f server.js
+
           test -f client/package.json
-          test -d client
-          test -d android
-          test -f android/gradlew
+          test -f client/index.html
+          test -f client/vite.config.ts
 
-          echo ""
-          echo "======================================"
+          test -f android/settings.gradle.kts
+          test -f android/build.gradle.kts
+          test -f android/app/build.gradle.kts
+          test -f android/app/src/main/AndroidManifest.xml
+          test -f android/app/src/main/java/com/teamgopalsingh/app/MainActivity.kt
+
+          echo "=============================================="
           echo "FINAL PROJECT STRUCTURE VERIFIED"
-          echo "======================================"
+          echo "=============================================="
 
-          echo "package.json        : OK"
-          echo "server.js           : OK"
-          echo "client/package.json : OK"
-          echo "client/             : OK"
-          echo "android/            : OK"
-          echo "android/gradlew     : OK"
+          echo "Backend        : OK"
+          echo "Web client     : OK"
+          echo "Android/Kotlin : OK"
+          echo "Gradle KTS     : OK"
+
+      - name: Basic secret scan
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -RInE \
+            --exclude-dir=.git \
+            --exclude-dir=node_modules \
+            --exclude-dir=dist \
+            --exclude='*.lock' \
+            '(BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{30,})' \
+            .; then
+
+            echo "Potential secret detected."
+            exit 1
+          fi
+
+          echo "Basic secret scan passed."
 
       - name: Final pipeline success
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           echo ""
           echo "=============================================="
-          echo "       BUILD / VERIFY / MIGRATE PASSED"
+          echo "       BUILD / VERIFY PIPELINE PASSED"
           echo "=============================================="
 
-          echo ""
-          echo "Migration     : ${{ needs.prepare.outputs.migrated }}"
-          echo "Auto-repair   : ${{ needs.prepare.outputs.repaired }}"
-          echo "Source SHA    : ${{ needs.prepare.outputs.source_sha }}"
-
-          echo ""
           echo "Web + Backend : PASSED"
-          echo "Android       : PASSED"
+          echo "Android APK   : PASSED"
+          echo "Security scan : PASSED"
           echo "Project       : VERIFIED"
 
           echo ""
           echo "=============================================="
-          echo "             PIPELINE PASSED"
+          echo "              PIPELINE PASSED"
           echo "=============================================="
