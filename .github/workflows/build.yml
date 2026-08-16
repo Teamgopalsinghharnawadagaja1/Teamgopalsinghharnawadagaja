@@ -1,339 +1,369 @@
-name: Build and Verify
+name: Migrate App From ZIP
 
 on:
-  push:
-    branches:
-      - main
-      - master
-
-  pull_request:
-
   workflow_dispatch:
 
 permissions:
-  contents: read
-
-concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
-
+  contents: write
 
 jobs:
-
-  # ============================================================
-  # WEB BUILD
-  # ============================================================
-  web:
-    name: Web Build
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: Verify project files
-        shell: bash
-        run: |
-          set -e
-
-          test -f package.json || {
-            echo "ERROR: package.json not found"
-            exit 1
-          }
-
-          echo "Project files OK"
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Check backend syntax
-        run: node --check server.js
-
-      - name: Build web
-        run: npm run build
-
-      - name: Verify web build
-        shell: bash
-        run: |
-          set -e
-
-          test -d dist || {
-            echo "ERROR: dist directory missing"
-            exit 1
-          }
-
-          test -f dist/index.html || {
-            echo "ERROR: dist/index.html missing"
-            exit 1
-          }
-
-          echo "WEB BUILD OK"
-
-      - name: Upload web build
-        uses: actions/upload-artifact@v4
-        with:
-          name: web-dist
-          path: dist
-          if-no-files-found: error
-
-
-  # ============================================================
-  # BACKEND
-  # ============================================================
-  backend:
-    name: Backend Verification
+  migrate:
+    name: Extract and Migrate App
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
 
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      # =========================================================
+      # 1. CHECKOUT
+      # =========================================================
+      - name: Checkout repository
+        uses: actions/checkout@v5
         with:
-          node-version: 24
+          fetch-depth: 0
 
-      - name: Verify project files
+
+      # =========================================================
+      # 2. FIND EXACTLY ONE ZIP
+      # =========================================================
+      - name: Find application ZIP
         shell: bash
         run: |
           set -e
 
-          test -f package.json || {
-            echo "ERROR: package.json not found"
-            exit 1
-          }
+          echo "Searching for application ZIP..."
 
-      - name: Install dependencies
-        run: npm install
+          mapfile -t ZIPS < <(
+            find . \
+              -type f \
+              -iname "*.zip" \
+              -not -path "./.git/*" \
+              | sort
+          )
 
-      - name: Check server syntax
-        run: node --check server.js
-
-      - name: Run lint if available
-        run: npm run lint --if-present
-
-      - name: Run tests if available
-        run: npm run test --if-present
-
-
-  # ============================================================
-  # ANDROID
-  # ============================================================
-  android:
-    name: Android Debug APK
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    needs:
-      - web
-      - backend
-
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download web build
-        uses: actions/download-artifact@v4
-        with:
-          name: web-dist
-          path: dist
-
-      - name: Verify Android project
-        shell: bash
-        run: |
-          set -e
-
-          test -d android || {
-            echo "ERROR: android directory missing"
-            exit 1
-          }
-
-          test -f android/gradlew || {
-            echo "ERROR: android/gradlew missing"
-            exit 1
-          }
-
-          mkdir -p android/app/src/main/assets/www
-
-      - name: Copy web build to Android
-        shell: bash
-        run: |
-          set -e
-
-          rm -rf android/app/src/main/assets/www/*
-          cp -R dist/. android/app/src/main/assets/www/
-
-          test -f android/app/src/main/assets/www/index.html
-
-          echo "ANDROID WEB ASSETS OK"
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Make Gradle executable
-        working-directory: android
-        run: chmod +x gradlew
-
-      - name: Run Android tests
-        working-directory: android
-        run: ./gradlew test --stacktrace
-
-      - name: Build Debug APK
-        working-directory: android
-        run: ./gradlew assembleDebug --stacktrace
-
-      - name: Verify APK
-        shell: bash
-        run: |
-          set -e
-
-          APK=$(find android/app/build/outputs/apk/debug \
-            -type f \
-            -name "*.apk" \
-            | head -n 1)
-
-          if [ -z "$APK" ]; then
-            echo "ERROR: APK was not generated"
+          if [ "${#ZIPS[@]}" -eq 0 ]; then
+            echo "ERROR: No ZIP file found in repository."
+            echo ""
+            echo "Files currently in repository:"
+            find . -maxdepth 3 -type f \
+              -not -path "./.git/*" \
+              | sort
             exit 1
           fi
 
-          echo "APK CREATED:"
-          echo "$APK"
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-debug-apk
-          path: android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-
-
-  # ============================================================
-  # SECURITY
-  # ============================================================
-  security:
-    name: Security Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Scan obvious secrets
-        shell: bash
-        run: |
-          set -e
-
-          if grep -RInE \
-            --exclude-dir=.git \
-            --exclude-dir=node_modules \
-            --exclude-dir=dist \
-            --exclude='*.lock' \
-            --exclude='*.map' \
-            --exclude='*.png' \
-            --exclude='*.jpg' \
-            --exclude='*.jpeg' \
-            --exclude='*.webp' \
-            '(BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{30,})' \
-            .; then
-
-            echo "ERROR: Possible secret detected"
+          if [ "${#ZIPS[@]}" -gt 1 ]; then
+            echo "ERROR: Multiple ZIP files found."
+            echo ""
+            printf '%s\n' "${ZIPS[@]}"
+            echo ""
+            echo "Keep only the application ZIP and run again."
             exit 1
           fi
 
-          echo "SECURITY CHECK OK"
+          ZIP_FILE="${ZIPS[0]}"
+
+          echo "Application ZIP:"
+          echo "$ZIP_FILE"
+
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
 
-  # ============================================================
-  # VERIFICATION POLICY
-  # ============================================================
-  verification:
-    name: Verification Policy
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Verify data status system
+      # =========================================================
+      # 3. PREPARE TEMP DIRECTORY
+      # =========================================================
+      - name: Prepare migration workspace
         shell: bash
         run: |
           set -e
 
-          echo "Checking verification data structure..."
+          rm -rf migration-temp
+          rm -rf migration-backup
 
-          if [ -d "src" ]; then
-            echo "Source directory found."
-          fi
+          mkdir -p migration-temp
+          mkdir -p migration-backup
 
-          if [ -d "data" ]; then
-            echo "Data directory found."
-          fi
-
-          echo "Verification policy:"
-          echo "Verified = official source confirmed"
-          echo "Verification Pending = not yet confirmed"
-          echo "Rejected = incorrect or mismatched"
-
-          echo "VERIFICATION POLICY OK"
+          echo "Migration workspace ready."
 
 
-  # ============================================================
-  # FINAL
-  # ============================================================
-  final:
-    name: Final Status
-    runs-on: ubuntu-latest
-
-    needs:
-      - web
-      - backend
-      - android
-      - security
-      - verification
-
-    if: always()
-
-    steps:
-
-      - name: Verify all jobs
+      # =========================================================
+      # 4. EXTRACT ZIP
+      # =========================================================
+      - name: Extract application ZIP
         shell: bash
         run: |
           set -e
 
-          echo "Web: ${{ needs.web.result }}"
-          echo "Backend: ${{ needs.backend.result }}"
-          echo "Android: ${{ needs.android.result }}"
-          echo "Security: ${{ needs.security.result }}"
-          echo "Verification: ${{ needs.verification.result }}"
+          unzip -q "$ZIP_FILE" -d migration-temp
 
-          test "${{ needs.web.result }}" = "success"
-          test "${{ needs.backend.result }}" = "success"
-          test "${{ needs.android.result }}" = "success"
-          test "${{ needs.security.result }}" = "success"
-          test "${{ needs.verification.result }}" = "success"
+          echo "ZIP extracted successfully."
+
+          echo ""
+          echo "Extracted directories:"
+          find migration-temp \
+            -maxdepth 3 \
+            -type d \
+            | sort \
+            | head -100
+
+
+      # =========================================================
+      # 5. LOCATE ACTUAL APP PROJECT
+      # =========================================================
+      - name: Locate application project
+        shell: bash
+        run: |
+          set -e
+
+          echo "Searching for application project..."
+
+          mapfile -t PROJECTS < <(
+            find migration-temp \
+              -type f \
+              -name "package.json" \
+              -print0 |
+            xargs -0 -r -n1 dirname |
+            while read -r DIR; do
+              if [ -f "$DIR/server.js" ] &&
+                 [ -f "$DIR/client/package.json" ] &&
+                 [ -d "$DIR/client" ] &&
+                 [ -d "$DIR/android" ]; then
+                echo "$DIR"
+              fi
+            done |
+            sort -u
+          )
+
+          if [ "${#PROJECTS[@]}" -eq 0 ]; then
+            echo "ERROR: Complete application project was not found."
+            echo ""
+            echo "Expected structure:"
+            echo "package.json"
+            echo "server.js"
+            echo "client/package.json"
+            echo "android/"
+            echo ""
+            echo "Found package.json files:"
+            find migration-temp \
+              -type f \
+              -name "package.json" \
+              | sort
+            exit 1
+          fi
+
+          if [ "${#PROJECTS[@]}" -gt 1 ]; then
+            echo "ERROR: Multiple possible application projects found:"
+            printf '%s\n' "${PROJECTS[@]}"
+            exit 1
+          fi
+
+          APP_DIR="${PROJECTS[0]}"
+
+          echo "Application project found:"
+          echo "$APP_DIR"
+
+          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+
+
+      # =========================================================
+      # 6. VERIFY APPLICATION
+      # =========================================================
+      - name: Verify application structure
+        shell: bash
+        run: |
+          set -e
+
+          echo "Verifying application..."
+
+          test -f "$APP_DIR/package.json"
+          test -f "$APP_DIR/server.js"
+          test -f "$APP_DIR/client/package.json"
+          test -d "$APP_DIR/client"
+          test -d "$APP_DIR/android"
 
           echo ""
           echo "======================================"
-          echo "ALL CHECKS PASSED"
+          echo "APPLICATION STRUCTURE VERIFIED"
+          echo "======================================"
+          echo "Root package.json    : OK"
+          echo "server.js            : OK"
+          echo "client/              : OK"
+          echo "client/package.json  : OK"
+          echo "android/             : OK"
+          echo "======================================"
+
+
+      # =========================================================
+      # 7. BACKUP EXISTING GITHUB WORKFLOWS
+      # =========================================================
+      - name: Preserve existing workflows
+        shell: bash
+        run: |
+          set -e
+
+          if [ -d ".github/workflows" ]; then
+            cp -R ".github/workflows/." "migration-backup/"
+          fi
+
+          echo "Existing workflows preserved."
+
+
+      # =========================================================
+      # 8. COPY APPLICATION TO ROOT
+      # =========================================================
+      - name: Migrate application to repository root
+        shell: bash
+        run: |
+          set -e
+
+          echo "Copying application files..."
+
+          rsync -a \
+            --exclude=".git/" \
+            --exclude=".github/" \
+            "$APP_DIR/" \
+            ./
+
+          echo "Application copied to repository root."
+
+
+      # =========================================================
+      # 9. RESTORE WORKFLOWS
+      # =========================================================
+      - name: Restore GitHub workflows
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p .github/workflows
+
+          if [ -d "migration-backup" ]; then
+            cp -R migration-backup/. .github/workflows/
+          fi
+
+          echo "GitHub workflows restored."
+
+
+      # =========================================================
+      # 10. VERIFY FINAL ROOT
+      # =========================================================
+      - name: Verify final repository structure
+        shell: bash
+        run: |
+          set -e
+
+          echo ""
+          echo "Checking final repository structure..."
+          echo ""
+
+          test -f package.json || {
+            echo "ERROR: package.json missing."
+            exit 1
+          }
+
+          test -f server.js || {
+            echo "ERROR: server.js missing."
+            exit 1
+          }
+
+          test -f client/package.json || {
+            echo "ERROR: client/package.json missing."
+            exit 1
+          }
+
+          test -d client || {
+            echo "ERROR: client directory missing."
+            exit 1
+          }
+
+          test -d android || {
+            echo "ERROR: android directory missing."
+            exit 1
+          }
+
+          echo "======================================"
+          echo "FINAL STRUCTURE VERIFIED"
+          echo "======================================"
+          echo "package.json        : OK"
+          echo "server.js           : OK"
+          echo "client/             : OK"
+          echo "client/package.json : OK"
+          echo "android/            : OK"
+          echo "======================================"
+
+
+      # =========================================================
+      # 11. REMOVE ZIP
+      # =========================================================
+      - name: Remove old ZIP
+        shell: bash
+        run: |
+          set -e
+
+          rm -f "$ZIP_FILE"
+
+          echo "Old ZIP removed."
+
+
+      # =========================================================
+      # 12. CLEAN TEMP FILES
+      # =========================================================
+      - name: Cleanup migration files
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf migration-temp
+          rm -rf migration-backup
+
+          echo "Temporary migration files removed."
+
+
+      # =========================================================
+      # 13. FINAL CHECK BEFORE COMMIT
+      # =========================================================
+      - name: Final pre-commit verification
+        shell: bash
+        run: |
+          set -e
+
+          test -f package.json
+          test -f server.js
+          test -f client/package.json
+          test -d client
+          test -d android
+
+          echo ""
+          echo "======================================"
+          echo "PRE-COMMIT VERIFICATION PASSED"
+          echo "======================================"
+
+
+      # =========================================================
+      # 14. COMMIT AND PUSH
+      # =========================================================
+      - name: Commit migrated application
+        shell: bash
+        run: |
+          set -e
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes detected."
+            echo "Migration may already be complete."
+            exit 0
+          fi
+
+          git commit -m "Migrate application project to repository root"
+
+          git push
+
+          echo ""
+          echo "======================================"
+          echo "MIGRATION COMPLETE"
+          echo "======================================"
+          echo "Application is now at repository root."
           echo "======================================"
