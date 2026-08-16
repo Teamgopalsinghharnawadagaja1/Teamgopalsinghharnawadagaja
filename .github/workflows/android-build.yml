@@ -40,21 +40,26 @@ jobs:
             flutter create --platforms=android --org com.teamgopalsingh --project-name jhalrapatan .
           fi
 
-      - name: Verify package configuration
+      - name: Verify project files
         shell: bash
         run: |
           test -f pubspec.yaml
           test -d lib
           test -f assets/requirements/feature_registry.json
-          grep -R "com.teamgopalsingh.jhalrapatan" android/app/src/main/AndroidManifest.xml android/app/build.gradle* android/app/build.gradle.kts 2>/dev/null || true
+          test -d android
 
-      - name: Configure Firebase Android file
-        if: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON != '' }}
+      - name: Configure Firebase if secret exists
         shell: bash
         env:
           FIREBASE_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON }}
         run: |
-          printf '%s' "$FIREBASE_GOOGLE_SERVICES_JSON" > android/app/google-services.json
+          if [ -n "$FIREBASE_GOOGLE_SERVICES_JSON" ]; then
+            mkdir -p android/app
+            printf '%s' "$FIREBASE_GOOGLE_SERVICES_JSON" > android/app/google-services.json
+            echo "Firebase configuration supplied."
+          else
+            echo "Firebase secret not supplied; continuing without it."
+          fi
 
       - name: Get dependencies
         run: flutter pub get
