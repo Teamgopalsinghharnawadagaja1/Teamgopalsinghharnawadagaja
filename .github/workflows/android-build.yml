@@ -12,7 +12,6 @@ permissions:
 jobs:
   android-build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,12 +28,33 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Verify Flutter
-        run: flutter --version
+      - name: Prepare project from ZIP if needed
+        shell: bash
+        run: |
+          set -e
+          if [ ! -f pubspec.yaml ]; then
+            ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' | head -n 1 || true)"
+            if [ -n "$ZIP_FILE" ]; then
+              mkdir -p .project_extract
+              unzip -oq "$ZIP_FILE" -d .project_extract
+              if [ -f ".project_extract/pubspec.yaml" ]; then
+                cp -a .project_extract/. .
+              else
+                FOUND="$(find .project_extract -type f -name pubspec.yaml -print -quit || true)"
+                if [ -n "$FOUND" ]; then
+                  cp -a "$(dirname "$FOUND")"/. .
+                else
+                  echo "No pubspec.yaml found inside the uploaded ZIP."
+                  exit 1
+                fi
+              fi
+            fi
+          fi
 
       - name: Create Android platform if missing
         shell: bash
         run: |
+          set -e
           if [ ! -f android/settings.gradle ] && [ ! -f android/settings.gradle.kts ]; then
             flutter create --platforms=android --org com.teamgopalsingh --project-name jhalrapatan .
           fi
@@ -42,10 +62,11 @@ jobs:
       - name: Verify project files
         shell: bash
         run: |
+          set -e
           test -f pubspec.yaml
           test -d lib
-          test -f assets/requirements/feature_registry.json
           test -d android
+          test -f assets/requirements/feature_registry.json
 
       - name: Configure Firebase if secret exists
         shell: bash
@@ -55,9 +76,6 @@ jobs:
           if [ -n "$FIREBASE_GOOGLE_SERVICES_JSON" ]; then
             mkdir -p android/app
             printf '%s' "$FIREBASE_GOOGLE_SERVICES_JSON" > android/app/google-services.json
-            echo "Firebase configuration supplied."
-          else
-            echo "Firebase secret not supplied; continuing without it."
           fi
 
       - name: Get dependencies
