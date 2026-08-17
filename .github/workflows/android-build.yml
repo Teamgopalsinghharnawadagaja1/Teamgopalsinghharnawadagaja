@@ -34,7 +34,7 @@ jobs:
           flutter --version
           dart --version
 
-      - name: Prepare Flutter project from ZIP
+      - name: Prepare project from ZIP if needed
         shell: bash
         run: |
           set -e
@@ -66,50 +66,36 @@ jobs:
         run: |
           set -e
 
-          if [ ! -f android/settings.gradle ] &&
-             [ ! -f android/settings.gradle.kts ]; then
-
-            echo "Android platform missing. Creating it..."
-
-            flutter create \
-              --platforms=android \
-              --org com.teamgopalsingh \
-              --project-name jhalrapatan \
-              .
+          if [ ! -f android/settings.gradle ] && [ ! -f android/settings.gradle.kts ]; then
+            flutter create               --platforms=android               --org com.teamgopalsingh               --project-name jhalrapatan               .
           fi
 
-      - name: Verify Flutter project
+      - name: Verify project files
         shell: bash
         run: |
           set -e
 
           test -f pubspec.yaml
-          test -d lib
           test -f lib/main.dart
+          test -d lib
           test -d android
 
           echo "Flutter project verified."
 
-      - name: Check feature registry
+      - name: Remove old Flutter default test
         shell: bash
         run: |
-          if [ -f assets/requirements/feature_registry.json ]; then
-            echo "Feature registry found."
-          else
-            echo "WARNING: feature_registry.json not found."
-          fi
+          rm -f test/widget_test.dart
+          echo "Removed test/widget_test.dart if it existed."
 
-      - name: Configure Firebase
+      - name: Configure Firebase if secret exists
         shell: bash
         env:
           FIREBASE_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON }}
         run: |
           if [ -n "$FIREBASE_GOOGLE_SERVICES_JSON" ]; then
             mkdir -p android/app
-
-            printf '%s' "$FIREBASE_GOOGLE_SERVICES_JSON" \
-              > android/app/google-services.json
-
+            printf '%s' "$FIREBASE_GOOGLE_SERVICES_JSON" > android/app/google-services.json
             echo "Firebase configuration installed."
           else
             echo "Firebase secret not configured. Continuing without Firebase."
@@ -118,49 +104,47 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
-      - name: Check outdated dependencies
-        run: flutter pub outdated || true
-
       - name: Analyze
         run: flutter analyze
 
       - name: Run tests
         shell: bash
         run: |
-          if [ -d test ] && find test -type f -name '*_test.dart' | grep -q .; then
+          if [ -d test ] && find test -type f -name '*_test.dart' -print -quit | grep -q .; then
             flutter test
           else
             echo "No Flutter tests found. Skipping tests."
           fi
 
       - name: Build Debug APK
-        run: |
-          flutter build apk --debug
-
-      - name: Rename Debug APK
-        run: |
-          mkdir -p release-apks
-
-          cp build/app/outputs/flutter-apk/app-debug.apk \
-            release-apks/Team-Gopal-Singh-Jhalrapatan-debug.apk
+        run: flutter build apk --debug
 
       - name: Build Release APK
-        run: |
-          flutter build apk --release
+        run: flutter build apk --release
 
-      - name: Rename Release APK
-        run: |
-          cp build/app/outputs/flutter-apk/app-release.apk \
-            release-apks/Team-Gopal-Singh-Jhalrapatan-release.apk
+      - name: Build Release AAB
+        run: flutter build appbundle --release
 
-      - name: Show APK files
+      - name: Prepare Android artifacts
+        shell: bash
         run: |
-          ls -lh release-apks/
+          set -e
 
-      - name: Upload APK artifacts
+          mkdir -p release-apks
+
+          cp build/app/outputs/flutter-apk/app-debug.apk             release-apks/Team-Gopal-Singh-Jhalrapatan-debug.apk
+
+          cp build/app/outputs/flutter-apk/app-release.apk             release-apks/Team-Gopal-Singh-Jhalrapatan-release.apk
+
+          cp build/app/outputs/bundle/release/app-release.aab             release-apks/Team-Gopal-Singh-Jhalrapatan-release.aab
+
+          echo "Generated files:"
+          ls -lh release-apks
+
+      - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Team-Gopal-Singh-Jhalrapatan-APK
-          path: release-apks/*.apk
+          name: Team-Gopal-Singh-Jhalrapatan-Android
+          path: release-apks/*
           if-no-files-found: error
           retention-days: 30
