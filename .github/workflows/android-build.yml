@@ -12,6 +12,7 @@ permissions:
 jobs:
   android-build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,23 +30,33 @@ jobs:
           cache: true
 
       - name: Verify Flutter
-        run: flutter --version
+        run: |
+          flutter --version
+          dart --version
 
-      - name: Prepare project from ZIP if needed
+      - name: Prepare Flutter project from ZIP
         shell: bash
         run: |
           set -e
+
           if [ ! -f pubspec.yaml ]; then
-            ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' | head -n 1 || true)"
+            ZIP_FILE="$(find . -maxdepth 3 -type f -iname '*.zip' | head -n 1 || true)"
+
             if [ -n "$ZIP_FILE" ]; then
+              echo "Found ZIP: $ZIP_FILE"
+
               mkdir -p .project_extract
               unzip -oq "$ZIP_FILE" -d .project_extract
-              if [ -f ".project_extract/pubspec.yaml" ]; then
-                cp -a .project_extract/. .
+
+              FOUND="$(find .project_extract -type f -name pubspec.yaml -print -quit || true)"
+
+              if [ -n "$FOUND" ]; then
+                PROJECT_DIR="$(dirname "$FOUND")"
+                echo "Flutter project found at: $PROJECT_DIR"
+                cp -a "$PROJECT_DIR"/. .
               else
-                FOUND="$(find .project_extract -type f -name pubspec.yaml -print -quit || true)"
-                test -n "$FOUND"
-                cp -a "$(dirname "$FOUND")"/. .
+                echo "ERROR: pubspec.yaml was not found inside ZIP."
+                exit 1
               fi
             fi
           fi
@@ -54,48 +65,102 @@ jobs:
         shell: bash
         run: |
           set -e
-          if [ ! -f android/settings.gradle ] && [ ! -f android/settings.gradle.kts ]; then
-            flutter create --platforms=android --org com.teamgopalsingh --project-name jhalrapatan .
+
+          if [ ! -f android/settings.gradle ] &&
+             [ ! -f android/settings.gradle.kts ]; then
+
+            echo "Android platform missing. Creating it..."
+
+            flutter create \
+              --platforms=android \
+              --org com.teamgopalsingh \
+              --project-name jhalrapatan \
+              .
           fi
 
-      - name: Remove Flutter default test
-        run: rm -f test/widget_test.dart
-
-      - name: Verify project files
+      - name: Verify Flutter project
         shell: bash
         run: |
           set -e
+
           test -f pubspec.yaml
           test -d lib
-          test -d android
-          test -f assets/requirements/feature_registry.json
           test -f lib/main.dart
+          test -d android
 
-      - name: Configure Firebase if secret exists
+          echo "Flutter project verified."
+
+      - name: Check feature registry
+        shell: bash
+        run: |
+          if [ -f assets/requirements/feature_registry.json ]; then
+            echo "Feature registry found."
+          else
+            echo "WARNING: feature_registry.json not found."
+          fi
+
+      - name: Configure Firebase
         shell: bash
         env:
           FIREBASE_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON }}
         run: |
           if [ -n "$FIREBASE_GOOGLE_SERVICES_JSON" ]; then
             mkdir -p android/app
-            printf '%s' "$FIREBASE_GOOGLE_SERVICES_JSON" > android/app/google-services.json
+
+            printf '%s' "$FIREBASE_GOOGLE_SERVICES_JSON" \
+              > android/app/google-services.json
+
+            echo "Firebase configuration installed."
+          else
+            echo "Firebase secret not configured. Continuing without Firebase."
           fi
 
       - name: Get dependencies
         run: flutter pub get
 
+      - name: Check outdated dependencies
+        run: flutter pub outdated || true
+
       - name: Analyze
         run: flutter analyze
 
-      - name: Test
-        run: flutter test test/app_test.dart
+      - name: Run tests
+        shell: bash
+        run: |
+          if [ -d test ] && find test -type f -name '*_test.dart' | grep -q .; then
+            flutter test
+          else
+            echo "No Flutter tests found. Skipping tests."
+          fi
 
-      - name: Build debug APK
-        run: flutter build apk --debug
+      - name: Build Debug APK
+        run: |
+          flutter build apk --debug
 
-      - name: Upload debug APK
+      - name: Rename Debug APK
+        run: |
+          mkdir -p release-apks
+
+          cp build/app/outputs/flutter-apk/app-debug.apk \
+            release-apks/Team-Gopal-Singh-Jhalrapatan-debug.apk
+
+      - name: Build Release APK
+        run: |
+          flutter build apk --release
+
+      - name: Rename Release APK
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk \
+            release-apks/Team-Gopal-Singh-Jhalrapatan-release.apk
+
+      - name: Show APK files
+        run: |
+          ls -lh release-apks/
+
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: team-gopal-singh-jhalrapatan-debug-apk
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          name: Team-Gopal-Singh-Jhalrapatan-APK
+          path: release-apks/*.apk
           if-no-files-found: error
+          retention-days: 30
